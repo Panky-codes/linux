@@ -88,6 +88,10 @@ module_param(apst_secondary_latency_tol_us, ulong, 0644);
 MODULE_PARM_DESC(apst_secondary_latency_tol_us,
 	"secondary APST latency tolerance in us");
 
+static bool debug_large_lbas;
+module_param(debug_large_lbas, bool, 0644);
+MODULE_PARM_DESC(debug_large_lbas, "allow LBAs > PAGE_SIZE");
+
 /*
  * nvme_wq - hosts nvme related works that are not reset or delete
  * nvme_reset_wq - hosts nvme reset works
@@ -1835,16 +1839,23 @@ static void nvme_update_disk_info(struct gendisk *disk,
 		struct nvme_ns *ns, struct nvme_id_ns *id)
 {
 	sector_t capacity = nvme_lba_to_sect(ns, le64_to_cpu(id->nsze));
-	unsigned short bs = 1 << ns->lba_shift;
+	u32 bs = 1 << ns->lba_shift;
 	u32 atomic_bs, phys_bs, io_opt = 0;
 
 	/*
 	 * The block layer can't support LBA sizes larger than the page size
 	 * yet, so catch this early and don't allow block I/O.
+	 *
+	 * The issues for LBA > PAGE_SIZE need to be fixed.
 	 */
 	if (ns->lba_shift > PAGE_SHIFT) {
-		capacity = 0;
-		bs = (1 << 9);
+		if (debug_large_lbas && !IS_ENABLED(CONFIG_BUFFER_HEAD))
+			dev_warn(ns->ctrl->device,
+				 "forcibly allowing LBAS > PAGE_SIZE due to nvme_core.debug_large_lbas -- use at your own risk\n");
+		else {
+			capacity = 0;
+			bs = (1 << 9);
+		}
 	}
 
 	blk_integrity_unregister(disk);
