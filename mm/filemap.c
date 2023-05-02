@@ -1964,6 +1964,13 @@ no_page:
 
 		if (mapping->host->i_blkbits > PAGE_SHIFT)
 			order = mapping->host->i_blkbits - PAGE_SHIFT;
+		// HACK: Network filesystem such as 9pfs sets the blocksize
+		// to be a large value. Allos higher order folio allocation
+		// for order <= 4 (64kb block size)
+		if (order > 4) {
+			order = 0;
+		}
+
 		folio = filemap_alloc_folio(gfp, order);
 		if (!folio)
 			return ERR_PTR(-ENOMEM);
@@ -2525,6 +2532,12 @@ static int filemap_create_folio(struct file *file,
 
 	if (mapping->host->i_blkbits > PAGE_SHIFT)
 		order = mapping->host->i_blkbits - PAGE_SHIFT;
+	// HACK: Network filesystem such as 9pfs sets the blocksize
+	// to be a large value. Allos higher order folio allocation
+	// for order <= 4 (64kb block size)
+	if (order > 4) {
+		order = 0;
+	}
 	folio = filemap_alloc_folio(mapping_gfp_mask(mapping), order);
 	if (!folio)
 		return -ENOMEM;
@@ -3675,6 +3688,13 @@ static struct folio *do_read_cache_folio(struct address_space *mapping,
 
 	if (mapping->host->i_blkbits > PAGE_SHIFT)
 		order = mapping->host->i_blkbits - PAGE_SHIFT;
+
+	// HACK: Network filesystem such as 9pfs sets the blocksize
+	// to be a large value. Allos higher order folio allocation
+	// for order <= 4 (64kb block size)
+	if (order > 4) {
+		order = 0;
+	}
 
 	if (!filler)
 		filler = mapping->a_ops->read_folio;
