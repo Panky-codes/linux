@@ -226,12 +226,32 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 	if (mapping->host->i_blkbits > PAGE_SHIFT)
 		order = mapping->host->i_blkbits - PAGE_SHIFT;
 
+	// HACK: Network filesystem such as 9pfs sets the blocksize
+	// to be a large value. Allos higher order folio allocation
+	// for order <= 4 (64kb block size)
+	if (order > 4) {
+		order = 0;
+	}
+
 	filemap_invalidate_lock_shared(mapping);
 	/*
 	 * Preallocate as many pages as we will need.
 	 */
+	if (order > 0)
+		pr_info("nr_to_read %ld",nr_to_read);
 	for (i = 0; i < nr_to_read; i++) {
 		struct folio *folio = xa_load(&mapping->i_pages, index + i);
+
+		if (index & ((1UL << order) - 1)) {
+			order = __ffs(index);
+			if (order == 1)
+				order = 0;
+		}
+
+		while ((1UL << order) > nr_to_read) {
+			if (--order == 1)
+				order = 0;
+		}
 
 		if (folio && !xa_is_value(folio)) {
 			/*
@@ -242,7 +262,14 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 			 * have a stable reference to this page, and it's
 			 * not worth getting one just for that.
 			 */
+			if (order > 0)
+				pr_info("Folio has no value b4 read pages: _index %ld _nr_pages %d",
+					ractl->_index, ractl->_nr_pages);
+
 			read_pages(ractl);
+			if (order > 0)
+				pr_info("Folio has no value After read pages: _index %ld _nr_pages %d",
+					ractl->_index, ractl->_nr_pages);
 			ractl->_index++;
 			i = ractl->_index + ractl->_nr_pages - index - 1;
 			continue;
@@ -254,8 +281,16 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 		if (filemap_add_folio(mapping, folio, index + i,
 					gfp_mask) < 0) {
 			folio_put(folio);
+
+			if (order > 0)
+				pr_info("alloc folio b4 read pages: _index %ld _nr_pages %d",
+					ractl->_index, ractl->_nr_pages);
+
 			read_pages(ractl);
 			ractl->_index++;
+			if (order > 0)
+				pr_info("alloc folio After read pages: _index %ld _nr_pages %d",
+					ractl->_index, ractl->_nr_pages);
 			i = ractl->_index + ractl->_nr_pages - index - 1;
 			continue;
 		}

@@ -855,6 +855,9 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 
 	if (!huge) {
 		int error = mem_cgroup_charge(folio, NULL, gfp);
+		if (index & (folio_nr_pages(folio) - 1))
+			pr_info("FILEMAP %s: index=%ld folio_pages=%ld", __func__, index, folio_nr_pages(folio));
+
 		VM_BUG_ON_FOLIO(index & (folio_nr_pages(folio) - 1), folio);
 		if (error)
 			return error;
