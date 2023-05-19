@@ -376,6 +376,7 @@ static int brd_alloc(int i)
 	disk->minors		= max_part;
 	disk->fops		= &brd_fops;
 	disk->private_data	= brd;
+	disk->flags = GENHD_FL_NO_PART;
 	strscpy(disk->disk_name, buf, DISK_NAME_LEN);
 	set_capacity(disk, rd_size * 2);
 
@@ -392,6 +393,11 @@ static int brd_alloc(int i)
 	blk_queue_flag_set(QUEUE_FLAG_NONROT, disk->queue);
 	blk_queue_flag_set(QUEUE_FLAG_SYNCHRONOUS, disk->queue);
 	blk_queue_flag_set(QUEUE_FLAG_NOWAIT, disk->queue);
+	if (brd->brd_logical_sector_shift == 14) {
+		pr_info("Setting order 2 page cache\n");
+		mapping_set_order_2(disk->part0->bd_inode->i_mapping);
+	}
+
 	err = add_disk(disk);
 	if (err)
 		goto out_cleanup_disk;
