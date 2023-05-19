@@ -1881,6 +1881,10 @@ static void nvme_update_disk_info(struct gendisk *disk,
 	}
 
 	blk_queue_logical_block_size(disk->queue, bs);
+	if (bs == 16384) {
+		pr_info("Setting order 2 page cache\n");
+		mapping_set_order_2(disk->part0->bd_inode->i_mapping);
+	}
 	/*
 	 * Linux filesystems assume writing a single physical block is
 	 * an atomic operation. Hence limit the physical block size to the

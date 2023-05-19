@@ -203,6 +203,7 @@ enum mapping_flags {
 	/* writeback related tags are not used */
 	AS_NO_WRITEBACK_TAGS = 5,
 	AS_LARGE_FOLIO_SUPPORT = 6,
+	AS_ORDER_2 = 7,
 };
 
 /**
@@ -318,6 +319,17 @@ static inline bool mapping_large_folio_support(struct address_space *mapping)
 {
 	return IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) &&
 		test_bit(AS_LARGE_FOLIO_SUPPORT, &mapping->flags);
+}
+
+static inline void mapping_set_order_2(struct address_space *mapping)
+{
+	__set_bit(AS_ORDER_2, &mapping->flags);
+}
+
+static inline bool mapping_order_2(struct address_space *mapping)
+{
+	return IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) &&
+		test_bit(AS_ORDER_2, &mapping->flags);
 }
 
 static inline int filemap_nr_thps(struct address_space *mapping)
