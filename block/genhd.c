@@ -515,6 +515,7 @@ int __must_check device_add_disk(struct device *parent, struct gendisk *disk,
 			set_bit(GD_NEED_PART_SCAN, &disk->state);
 
 		bdev_add(disk->part0, ddev->devt);
+		bdev_set_mapping_order(disk->part0);
 		if (get_capacity(disk))
 			disk_scan_partitions(disk, FMODE_READ);
 
