@@ -447,6 +447,19 @@ void bdev_add(struct block_device *bdev, dev_t dev)
 	insert_inode_hash(bdev->bd_inode);
 }
 
+void bdev_set_mapping_order(struct block_device *bdev)
+{
+#ifdef CONFIG_BUFFER_HEAD
+	return;
+#endif
+	unsigned int lbs = queue_logical_block_size(bdev->bd_queue);
+	int order = ilog2(lbs) - PAGE_SHIFT;
+
+	if (order > 0)
+		mapping_set_min_folio_order(bdev->bd_inode->i_mapping,
+					    order);
+}
+
 long nr_blockdev_pages(void)
 {
 	struct inode *inode;
