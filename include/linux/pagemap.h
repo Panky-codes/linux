@@ -203,7 +203,15 @@ enum mapping_flags {
 	/* writeback related tags are not used */
 	AS_NO_WRITEBACK_TAGS = 5,
 	AS_LARGE_FOLIO_SUPPORT = 6,
+       /* Bit 11 - Bit 8 is reserved to encode folio order in binary 
+	* For e.g., order 4 is indicate as follows: 0b0100xxxxxxxx and
+	* order 12 is indicated as follows: 0b1100xxxxxxxx
+	* */
+	AS_FOLIO_ORDER_MIN = 8,
+        AS_FOLIO_ORDER_MAX = 11,
 };
+
+#define AS_FOLIO_ORDER_MASK 0x00000f00
 
 /**
  * mapping_set_error - record a writeback error in the address_space
@@ -319,6 +327,38 @@ static inline bool mapping_large_folio_support(struct address_space *mapping)
 	return IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) &&
 		test_bit(AS_LARGE_FOLIO_SUPPORT, &mapping->flags);
 }
+
+/*
+ * Minimum order used to allocate folios in the cache.
+ */
+static inline unsigned mapping_min_folio_order(struct address_space *mapping)
+{
+	if (!IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE))
+		return 0;
+
+	return (mapping->flags & AS_FOLIO_ORDER_MASK) >> AS_FOLIO_ORDER_MIN;
+}
+
+/**
+ * mapping_set_min_folio_order() - Set the minimum allocation order for the
+ * folios.
+ * @mapping: The file.
+ * @order: Order of the folio
+ *
+ * The filesystem should call this function in its inode constructor to
+ * indicate that the VFS should allocate folios with this minimum order.
+ *
+ * Context: This should not be called while the inode is active as it
+ * is non-atomic.
+ */
+static inline void mapping_set_min_folio_order(struct address_space *mapping,
+					       unsigned order)
+{
+	WARN_ON_ONCE(mapping_min_folio_order(mapping));
+
+	mapping->flags |= ((order << AS_FOLIO_ORDER_MIN) & AS_FOLIO_ORDER_MASK);
+}
+
 
 static inline int filemap_nr_thps(struct address_space *mapping)
 {
