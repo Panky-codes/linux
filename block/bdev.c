@@ -126,6 +126,7 @@ static void set_init_blocksize(struct block_device *bdev)
 {
 	unsigned int bsize = bdev_logical_block_size(bdev);
 	loff_t size = i_size_read(bdev->bd_inode);
+	int order, folio_order;
 
 	while (bsize < PAGE_SIZE) {
 		if (size & bsize)
@@ -133,6 +134,14 @@ static void set_init_blocksize(struct block_device *bdev)
 		bsize <<= 1;
 	}
 	bdev->bd_inode->i_blkbits = blksize_bits(bsize);
+	order = bdev->bd_inode->i_blkbits - PAGE_SHIFT;
+	folio_order = mapping_min_folio_order(bdev->bd_inode->i_mapping);
+
+	if (!IS_ENABLED(CONFIG_BUFFER_HEAD)) {
+		/* Do not allow changing the folio order after it is set */
+		WARN_ON_ONCE(folio_order && (folio_order != order));
+		mapping_set_folio_orders(bdev->bd_inode->i_mapping, order, 31);
+	}
 }
 
 int set_blocksize(struct block_device *bdev, int size)
