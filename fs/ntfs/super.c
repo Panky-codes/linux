@@ -3062,7 +3062,7 @@ static struct file_system_type ntfs_fs_type = {
 	.name		= "ntfs",
 	.mount		= ntfs_mount,
 	.kill_sb	= kill_block_super,
-	.fs_flags	= FS_REQUIRES_DEV,
+	.fs_flags	= FS_REQUIRES_DEV | FS_BUFFER_HEADS,
 };
 MODULE_ALIAS_FS("ntfs");
 

@@ -390,7 +390,7 @@ static struct file_system_type qnx4_fs_type = {
 	.name		= "qnx4",
 	.mount		= qnx4_mount,
 	.kill_sb	= qnx4_kill_sb,
-	.fs_flags	= FS_REQUIRES_DEV,
+	.fs_flags	= FS_REQUIRES_DEV | FS_BUFFER_HEADS,
 };
 MODULE_ALIAS_FS("qnx4");
 

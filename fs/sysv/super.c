@@ -545,7 +545,7 @@ static struct file_system_type sysv_fs_type = {
 	.name		= "sysv",
 	.mount		= sysv_mount,
 	.kill_sb	= kill_block_super,
-	.fs_flags	= FS_REQUIRES_DEV,
+	.fs_flags	= FS_REQUIRES_DEV | FS_BUFFER_HEADS,
 };
 MODULE_ALIAS_FS("sysv");
 
@@ -554,7 +554,7 @@ static struct file_system_type v7_fs_type = {
 	.name		= "v7",
 	.mount		= v7_mount,
 	.kill_sb	= kill_block_super,
-	.fs_flags	= FS_REQUIRES_DEV,
+	.fs_flags	= FS_REQUIRES_DEV | FS_BUFFER_HEADS,
 };
 MODULE_ALIAS_FS("v7");
 MODULE_ALIAS("v7");

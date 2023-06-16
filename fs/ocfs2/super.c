@@ -1191,7 +1191,7 @@ static struct file_system_type ocfs2_fs_type = {
 	.name           = "ocfs2",
 	.mount          = ocfs2_mount,
 	.kill_sb        = kill_block_super,
-	.fs_flags       = FS_REQUIRES_DEV|FS_RENAME_DOES_D_MOVE,
+	.fs_flags       = FS_REQUIRES_DEV|FS_RENAME_DOES_D_MOVE | FS_BUFFER_HEADS,
 	.next           = NULL
 };
 MODULE_ALIAS_FS("ocfs2");

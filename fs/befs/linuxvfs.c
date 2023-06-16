@@ -982,7 +982,7 @@ static struct file_system_type befs_fs_type = {
 	.name		= "befs",
 	.mount		= befs_mount,
 	.kill_sb	= kill_block_super,
-	.fs_flags	= FS_REQUIRES_DEV,
+	.fs_flags	= FS_REQUIRES_DEV | FS_BUFFER_HEADS,
 };
 MODULE_ALIAS_FS("befs");
 

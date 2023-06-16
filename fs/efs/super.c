@@ -40,7 +40,7 @@ static struct file_system_type efs_fs_type = {
 	.name		= "efs",
 	.mount		= efs_mount,
 	.kill_sb	= efs_kill_sb,
-	.fs_flags	= FS_REQUIRES_DEV,
+	.fs_flags	= FS_REQUIRES_DEV | FS_BUFFER_HEADS,
 };
 MODULE_ALIAS_FS("efs");
 

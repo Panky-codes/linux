@@ -130,7 +130,7 @@ static struct file_system_type udf_fstype = {
 	.name		= "udf",
 	.mount		= udf_mount,
 	.kill_sb	= kill_block_super,
-	.fs_flags	= FS_REQUIRES_DEV,
+	.fs_flags	= FS_REQUIRES_DEV | FS_BUFFER_HEADS,
 };
 MODULE_ALIAS_FS("udf");
 

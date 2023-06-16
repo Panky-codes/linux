@@ -649,7 +649,7 @@ static struct file_system_type affs_fs_type = {
 	.name		= "affs",
 	.mount		= affs_mount,
 	.kill_sb	= affs_kill_sb,
-	.fs_flags	= FS_REQUIRES_DEV,
+	.fs_flags	= FS_REQUIRES_DEV | FS_BUFFER_HEADS,
 };
 MODULE_ALIAS_FS("affs");
 
