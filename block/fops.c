@@ -400,7 +400,12 @@ static int blkdev_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 	iomap->type = IOMAP_MAPPED;
 	iomap->addr = iomap->offset;
 	iomap->length = isize - iomap->offset;
-	iomap->flags |= IOMAP_F_BUFFER_HEAD;
+
+	if (inode->i_sb->s_type->fs_flags & FS_BUFFER_HEADS) {
+		pr_info("BUFFER HEAD FLAG is SET");
+		iomap->flags |= IOMAP_F_BUFFER_HEAD;
+	}
+
 	return 0;
 }
 
@@ -408,50 +413,52 @@ static const struct iomap_ops blkdev_iomap_ops = {
 	.iomap_begin		= blkdev_iomap_begin,
 };
 
-static int blkdev_writepage(struct page *page, struct writeback_control *wbc)
-{
-	return block_write_full_page(page, blkdev_get_block, wbc);
-}
-
 static int blkdev_read_folio(struct file *file, struct folio *folio)
 {
-	return block_read_full_folio(folio, blkdev_get_block);
+	return iomap_read_folio(folio, &blkdev_iomap_ops);
 }
 
 static void blkdev_readahead(struct readahead_control *rac)
 {
-	mpage_readahead(rac, blkdev_get_block);
+	iomap_readahead(rac, &blkdev_iomap_ops);
 }
 
-static int blkdev_write_begin(struct file *file, struct address_space *mapping,
-		loff_t pos, unsigned len, struct page **pagep, void **fsdata)
+static int blkdev_map_blocks(struct iomap_writepage_ctx *wpc,
+		struct inode *inode, loff_t offset)
 {
-	return block_write_begin(mapping, pos, len, pagep, blkdev_get_block);
+	loff_t isize = i_size_read(inode);
+
+	if (WARN_ON_ONCE(offset >= isize))
+		return -EIO;
+	if (offset >= wpc->iomap.offset &&
+	    offset < wpc->iomap.offset + wpc->iomap.length)
+		return 0;
+	return blkdev_iomap_begin(inode, offset, isize - offset,
+				  IOMAP_WRITE, &wpc->iomap, NULL);
 }
 
-static int blkdev_write_end(struct file *file, struct address_space *mapping,
-		loff_t pos, unsigned len, unsigned copied, struct page *page,
-		void *fsdata)
+static const struct iomap_writeback_ops blkdev_writeback_ops = {
+	.map_blocks		= blkdev_map_blocks,
+};
+
+static int blkdev_writepages(struct address_space *mapping,
+		struct writeback_control *wbc)
 {
-	int ret;
-	ret = block_write_end(file, mapping, pos, len, copied, page, fsdata);
+	struct iomap_writepage_ctx wpc = { };
 
-	unlock_page(page);
-	put_page(page);
-
-	return ret;
+	return iomap_writepages(mapping, wbc, &wpc, &blkdev_writeback_ops);
 }
 
 const struct address_space_operations def_blk_aops = {
-	.dirty_folio	= block_dirty_folio,
-	.invalidate_folio = block_invalidate_folio,
-	.read_folio	= blkdev_read_folio,
-	.readahead	= blkdev_readahead,
-	.writepage	= blkdev_writepage,
-	.write_begin	= blkdev_write_begin,
-	.write_end	= blkdev_write_end,
-	.migrate_folio	= buffer_migrate_folio_norefs,
-	.is_dirty_writeback = buffer_check_dirty_writeback,
+	.dirty_folio	= filemap_dirty_folio,
+	.release_folio		= iomap_release_folio,
+	.invalidate_folio	= iomap_invalidate_folio,
+	.read_folio		= blkdev_read_folio,
+	.readahead		= blkdev_readahead,
+	.writepages		= blkdev_writepages,
+	.is_partially_uptodate  = iomap_is_partially_uptodate,
+	.error_remove_page	= generic_error_remove_page,
+	.migrate_folio		= filemap_migrate_folio,
 };
 
 /*
