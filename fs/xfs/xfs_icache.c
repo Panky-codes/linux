@@ -73,6 +73,7 @@ xfs_inode_alloc(
 	xfs_ino_t		ino)
 {
 	struct xfs_inode	*ip;
+	u32			min_order;
 
 	/*
 	 * XXX: If this didn't occur in transactions, we could drop GFP_NOFAIL
@@ -88,9 +89,8 @@ xfs_inode_alloc(
 	/* VFS doesn't initialise i_mode or i_state! */
 	VFS_I(ip)->i_mode = 0;
 	VFS_I(ip)->i_state = 0;
-	mapping_set_folio_orders(VFS_I(ip)->i_mapping,
-				 round_up(mp->m_sb.sb_blocksize, PAGE_SIZE),
-				 31);
+	min_order = mp->m_sb.sb_blocksize >> (PAGE_SHIFT + 1);
+	mapping_set_folio_orders(VFS_I(ip)->i_mapping, min_order, MAX_PAGECACHE_ORDER);
 
 	XFS_STATS_INC(mp, vn_active);
 	ASSERT(atomic_read(&ip->i_pincount) == 0);
@@ -315,6 +315,7 @@ xfs_reinit_inode(
 	dev_t			dev = inode->i_rdev;
 	kuid_t			uid = inode->i_uid;
 	kgid_t			gid = inode->i_gid;
+	u32			min_order;
 
 	error = inode_init_always(mp->m_super, inode);
 
@@ -325,9 +326,8 @@ xfs_reinit_inode(
 	inode->i_rdev = dev;
 	inode->i_uid = uid;
 	inode->i_gid = gid;
-	mapping_set_folio_orders(inode->i_mapping,
-				 round_up(mp->m_sb.sb_blocksize, PAGE_SIZE),
-				 31);
+	min_order = mp->m_sb.sb_blocksize >> (PAGE_SHIFT + 1);
+	mapping_set_folio_orders(inode->i_mapping, min_order, MAX_PAGECACHE_ORDER);
 	return error;
 }
 
