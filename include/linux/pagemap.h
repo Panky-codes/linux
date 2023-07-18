@@ -319,8 +319,8 @@ static inline void mapping_set_gfp_mask(struct address_space *m, gfp_t mask)
 /**
  * mapping_set_folio_orders() - Set the range of folio sizes supported.
  * @mapping: The file.
- * @min: Minimum folio order (between 0-31 inclusive).
- * @max: Maximum folio order (between 0-31 inclusive).
+ * @min: Minimum folio order (between 0-MAX_PAGECACHE_ORDER inclusive).
+ * @max: Maximum folio order (between 0-MAX_PAGECACHE_ORDER inclusive).
  *
  * The filesystem should call this function in its inode constructor to
  * indicate which sizes of folio the VFS can use to cache the contents
@@ -352,7 +352,7 @@ static inline void mapping_set_folio_orders(struct address_space *mapping,
  */
 static inline void mapping_set_large_folios(struct address_space *mapping)
 {
-	mapping_set_folio_orders(mapping, 0, 31);
+	mapping_set_folio_orders(mapping, 0, MAX_PAGECACHE_ORDER);
 }
 
 static inline unsigned mapping_max_folio_order(struct address_space *mapping)
