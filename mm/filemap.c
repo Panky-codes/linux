@@ -2562,7 +2562,12 @@ static int filemap_get_pages(struct kiocb *iocb, size_t count,
 	pgoff_t index = iocb->ki_pos >> PAGE_SHIFT;
 	pgoff_t last_index;
 	struct folio *folio;
+	int order = mapping_min_folio_order(mapping);
+	unsigned int nrpages = 1U << order;
 	int err = 0;
+
+	if (order > 0)
+		index = round_down(index, nrpages);
 
 	/* "last_index" is the index of the page beyond the end of the read */
 	last_index = DIV_ROUND_UP(iocb->ki_pos + count, PAGE_SIZE);
