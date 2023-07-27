@@ -468,11 +468,18 @@ EXPORT_SYMBOL_GPL(iomap_is_partially_uptodate);
 struct folio *iomap_get_folio(struct iomap_iter *iter, loff_t pos)
 {
 	unsigned fgp = FGP_WRITEBEGIN | FGP_NOFS;
+	int order = mapping_min_folio_order(iter->inode->i_mapping);
+	int nr_of_pages = (1U << order);
+	pgoff_t page_idx = pos >> PAGE_SHIFT;
+
+	if (order > 0)
+		page_idx = round_down(page_idx, nr_of_pages);
+
 
 	if (iter->flags & IOMAP_NOWAIT)
 		fgp |= FGP_NOWAIT;
 
-	return __filemap_get_folio(iter->inode->i_mapping, pos >> PAGE_SHIFT,
+	return __filemap_get_folio(iter->inode->i_mapping, page_idx,
 			fgp, mapping_gfp_mask(iter->inode->i_mapping));
 }
 EXPORT_SYMBOL_GPL(iomap_get_folio);
