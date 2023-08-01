@@ -337,6 +337,8 @@ void truncate_inode_pages_range(struct address_space *mapping,
 	int		i;
 	struct folio	*folio;
 	bool		same_folio;
+	unsigned int order = mapping_min_folio_order(mapping);
+	unsigned int nrpages  = 1U << order;
 
 	if (mapping_empty(mapping))
 		return;
@@ -348,6 +350,9 @@ void truncate_inode_pages_range(struct address_space *mapping,
 	 * Note that 'end' is exclusive while 'lend' is inclusive.
 	 */
 	start = (lstart + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	if (order > 0)
+		start = round_down(start, nrpages);
+
 	if (lend == -1)
 		/*
 		 * lend == -1 indicates end-of-file so we have to set 'end'
