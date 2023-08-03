@@ -502,12 +502,16 @@ void page_cache_ra_order(struct readahead_control *ractl,
 	pgoff_t limit = (i_size_read(mapping->host) - 1) >> PAGE_SHIFT;
 	pgoff_t mark = index + ra->size - ra->async_size;
 	int err = 0;
+	unsigned int min_order = mapping_min_folio_order(mapping);
 	gfp_t gfp = readahead_gfp_mask(mapping);
 
 	if (!mapping_large_folio_support(mapping) || ra->size < 4)
 		goto fallback;
 
 	limit = min(limit, index + ra->size - 1);
+
+	if (min_order)
+		limit = round_up(limit, 1U << min_order) - 1;
 
 	if (new_order < MAX_PAGECACHE_ORDER) {
 		new_order += 2;
@@ -570,6 +574,7 @@ static void ondemand_readahead(struct readahead_control *ractl,
 	pgoff_t index = readahead_index(ractl);
 	pgoff_t expected, prev_index;
 	unsigned int order = folio ? folio_order(folio) : 0;
+        int min_order = mapping_min_folio_order(ractl->mapping);
 
 	/*
 	 * If the request exceeds the readahead window, allow the read to
@@ -610,6 +615,10 @@ static void ondemand_readahead(struct readahead_control *ractl,
 		start = page_cache_next_miss(ractl->mapping, index + 1,
 				max_pages);
 		rcu_read_unlock();
+
+		if (min_order)
+			start = round_down(start, 1U << min_order);
+
 
 		if (!start || start - index > max_pages)
 			return;

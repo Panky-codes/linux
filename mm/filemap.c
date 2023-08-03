@@ -3226,6 +3226,8 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 	 */
 	fpin = maybe_unlock_mmap_for_io(vmf, fpin);
 	ra->start = max_t(long, 0, vmf->pgoff - ra->ra_pages / 2);
+	if (order > 0)
+		ra->start = round_down(ra->start, nrpages);
 	ra->size = ra->ra_pages;
 	ra->async_size = ra->ra_pages / 4;
 	ractl._index = ra->start;
@@ -3243,7 +3245,14 @@ static struct file *do_async_mmap_readahead(struct vm_fault *vmf,
 {
 	struct file *file = vmf->vma->vm_file;
 	struct file_ra_state *ra = &file->f_ra;
-	DEFINE_READAHEAD(ractl, file, ra, file->f_mapping, vmf->pgoff);
+	pgoff_t index = vmf->pgoff;
+	int order = mapping_min_folio_order(file->f_mapping);
+	unsigned int nrpages = 1U << order;
+
+	if (order > 0)
+		index = round_down(index, nrpages);
+
+	DEFINE_READAHEAD(ractl, file, ra, file->f_mapping, index);
 	struct file *fpin = NULL;
 	unsigned int mmap_miss;
 
