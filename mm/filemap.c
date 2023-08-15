@@ -847,6 +847,13 @@ EXPORT_SYMBOL_GPL(replace_page_cache_folio);
 noinline int __filemap_add_folio(struct address_space *mapping,
 		struct folio *folio, pgoff_t index, gfp_t gfp, void **shadowp)
 {
+       int min_order = mapping_min_folio_order(mapping);
+       int nr_of_pages = (1U << min_order);
+
+       if (min_order) {
+	       index = round_down(index, nr_of_pages);
+       }
+
 	XA_STATE(xas, &mapping->i_pages, index);
 	int huge = folio_test_hugetlb(folio);
 	bool charged = false;
@@ -1867,6 +1874,9 @@ struct folio *__filemap_get_folio(struct address_space *mapping, pgoff_t index,
 		fgf_t fgp_flags, gfp_t gfp)
 {
 	struct folio *folio;
+       int min_order = mapping_min_folio_order(mapping);
+       int nr_of_pages = (1U << min_order);
+
 
 repeat:
 	folio = filemap_get_entry(mapping, index);
@@ -1924,6 +1934,9 @@ no_page:
 			order = 0;
 		if (order > MAX_PAGECACHE_ORDER)
 			order = MAX_PAGECACHE_ORDER;
+
+		if (min_order)
+			index = round_down(index, nr_of_pages);
 		/* If we're not aligned, allocate a smaller folio */
 		if (index & ((1UL << order) - 1))
 			order = __ffs(index);
@@ -1936,6 +1949,10 @@ no_page:
 				order = 0;
 			if (order > 0)
 				alloc_gfp |= __GFP_NORETRY | __GFP_NOWARN;
+
+			if (min_order && (order < min_order))
+				BUG();
+
 			folio = filemap_alloc_folio(alloc_gfp, order);
 			if (!folio)
 				continue;
@@ -2485,7 +2502,8 @@ static int filemap_create_folio(struct file *file,
 	struct folio *folio;
 	int error;
 
-	folio = filemap_alloc_folio(mapping_gfp_mask(mapping), 0);
+	folio = filemap_alloc_folio(mapping_gfp_mask(mapping),
+				    mapping_min_folio_order(mapping));
 	if (!folio)
 		return -ENOMEM;
 
@@ -3679,7 +3697,8 @@ static struct folio *do_read_cache_folio(struct address_space *mapping,
 repeat:
 	folio = filemap_get_folio(mapping, index);
 	if (IS_ERR(folio)) {
-		folio = filemap_alloc_folio(gfp, 0);
+		folio = filemap_alloc_folio(gfp,
+					    mapping_min_folio_order(mapping));
 		if (!folio)
 			return ERR_PTR(-ENOMEM);
 		err = filemap_add_folio(mapping, folio, index, gfp);
