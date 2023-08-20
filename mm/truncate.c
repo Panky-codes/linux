@@ -377,7 +377,8 @@ void truncate_inode_pages_range(struct address_space *mapping,
 		cond_resched();
 	}
 
-	same_folio = (lstart >> PAGE_SHIFT) == (lend >> PAGE_SHIFT);
+	same_folio = round_down(lstart >> PAGE_SHIFT, nrpages) ==
+		     round_down(lend >> PAGE_SHIFT, nrpages);
 	folio = __filemap_get_folio(mapping, lstart >> PAGE_SHIFT, FGP_LOCK, 0);
 	if (!IS_ERR(folio)) {
 		same_folio = lend < folio_pos(folio) + folio_size(folio);
