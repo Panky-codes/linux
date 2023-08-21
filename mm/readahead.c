@@ -302,8 +302,8 @@ static void do_page_cache_ra(struct readahead_control *ractl,
 }
 
 /*
- * Chunk the readahead into 2 megabyte units, so that we don't pin too much
- * memory at once.
+ * Chunk the readahead into 512 times the min order, so that we don't pin too
+ * much memory at once. This is 2 MiB if on 4k min page order.
  */
 void force_page_cache_ra(struct readahead_control *ractl,
 		unsigned long nr_to_read)
@@ -333,7 +333,7 @@ void force_page_cache_ra(struct readahead_control *ractl,
 	max_pages = max_t(unsigned long, bdi->io_pages, ra->ra_pages);
 	nr_to_read = min_t(unsigned long, nr_to_read, max_pages);
 	while (nr_to_read) {
-		unsigned long this_chunk = (2 * 1024 * 1024) / PAGE_SIZE;
+		unsigned long this_chunk = nr_of_pages * 512;
 
 		if (this_chunk > nr_to_read)
 			this_chunk = nr_to_read;
