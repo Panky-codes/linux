@@ -847,20 +847,17 @@ EXPORT_SYMBOL_GPL(replace_page_cache_folio);
 noinline int __filemap_add_folio(struct address_space *mapping,
 		struct folio *folio, pgoff_t index, gfp_t gfp, void **shadowp)
 {
-       int min_order = mapping_min_folio_order(mapping);
-       int nr_of_pages = (1U << min_order);
-
-       if (min_order) {
-	       index = round_down(index, nr_of_pages);
-       }
-
-	XA_STATE(xas, &mapping->i_pages, index);
+	unsigned int min_order = mapping_min_folio_order(mapping);
+	unsigned int nr_of_pages = (1U << min_order);
+	pgoff_t rounded_index = round_down(index, nr_of_pages);
+	XA_STATE(xas, &mapping->i_pages, rounded_index);
 	int huge = folio_test_hugetlb(folio);
 	bool charged = false;
 	long nr = 1;
 
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
 	VM_BUG_ON_FOLIO(folio_test_swapbacked(folio), folio);
+
 	mapping_set_update(&xas, mapping);
 
 	if (!huge) {
@@ -869,7 +866,7 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 		if (error)
 			return error;
 		charged = true;
-		xas_set_order(&xas, index, folio_order(folio));
+		xas_set_order(&xas, rounded_index, folio_order(folio));
 		nr = folio_nr_pages(folio);
 	}
 
