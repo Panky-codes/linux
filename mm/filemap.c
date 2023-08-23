@@ -129,6 +129,7 @@
 static void page_cache_delete(struct address_space *mapping,
 				   struct folio *folio, void *shadow)
 {
+	unsigned int min_order = mapping_min_folio_order(mapping);
 	XA_STATE(xas, &mapping->i_pages, folio->index);
 	long nr = 1;
 
@@ -136,6 +137,7 @@ static void page_cache_delete(struct address_space *mapping,
 
 	/* hugetlb pages are represented by a single entry in the xarray */
 	if (!folio_test_hugetlb(folio)) {
+		VM_BUG_ON_FOLIO(folio_order(folio) < min_order, folio);
 		xas_set_order(&xas, folio->index, folio_order(folio));
 		nr = folio_nr_pages(folio);
 	}
@@ -862,7 +864,7 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 
 	if (!huge) {
 		int error = mem_cgroup_charge(folio, NULL, gfp);
-		VM_BUG_ON_FOLIO(index & (folio_nr_pages(folio) - 1), folio);
+		VM_BUG_ON_FOLIO(rounded_index & (folio_nr_pages(folio) - 1), folio);
 		if (error)
 			return error;
 		charged = true;
@@ -904,6 +906,7 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 			}
 		}
 
+		VM_BUG_ON_FOLIO(folio_order(folio) < min_order, folio);
 		xas_store(&xas, folio);
 		if (xas_error(&xas))
 			goto unlock;
@@ -1947,8 +1950,16 @@ no_page:
 			if (order > 0)
 				alloc_gfp |= __GFP_NORETRY | __GFP_NOWARN;
 
-			if (min_order && (order < min_order))
-				BUG();
+			/*
+			 * Ensure alignment to the high order folio, this
+			 * in turn ensures alignment to the min order.
+			 */
+			while ((index & ((1UL << order) - 1)) != 0)
+				order--;
+
+			VM_BUG_ON(order < min_order);
+			VM_BUG_ON(index & (nr_of_pages - 1));
+			VM_BUG_ON(index & ((1UL << order) - 1));
 
 			folio = filemap_alloc_folio(alloc_gfp, order);
 			if (!folio)
@@ -1963,7 +1974,7 @@ no_page:
 				break;
 			folio_put(folio);
 			folio = NULL;
-		} while (order-- > 0);
+		} while (order-- > min_order);
 
 		if (err == -EEXIST)
 			goto repeat;
@@ -2555,30 +2566,29 @@ static int filemap_get_pages(struct kiocb *iocb, size_t count,
 {
 	struct file *filp = iocb->ki_filp;
 	struct address_space *mapping = filp->f_mapping;
+	unsigned int min_order = mapping_min_folio_order(mapping);
+	unsigned int nrpages = 1UL << min_order;
 	struct file_ra_state *ra = &filp->f_ra;
-	pgoff_t index = iocb->ki_pos >> PAGE_SHIFT;
+	pgoff_t index = round_down(iocb->ki_pos >> PAGE_SHIFT, nrpages);
 	pgoff_t last_index;
 	struct folio *folio;
-	int order = mapping_min_folio_order(mapping);
-	unsigned int nrpages = 1U << order;
 	int err = 0;
-
-	if (order > 0)
-		index = round_down(index, nrpages);
 
 	/* "last_index" is the index of the page beyond the end of the read */
 	last_index = DIV_ROUND_UP(iocb->ki_pos + count, PAGE_SIZE);
+	if (min_order)
+		last_index += round_up(last_index, nrpages) - 1;
 retry:
 	if (fatal_signal_pending(current))
 		return -EINTR;
 
-	filemap_get_read_batch(mapping, index, last_index - 1, fbatch);
+	filemap_get_read_batch(mapping, index, last_index - nrpages, fbatch);
 	if (!folio_batch_count(fbatch)) {
 		if (iocb->ki_flags & IOCB_NOIO)
 			return -EAGAIN;
 		page_cache_sync_readahead(mapping, ra, filp, index,
 				last_index - index);
-		filemap_get_read_batch(mapping, index, last_index - 1, fbatch);
+		filemap_get_read_batch(mapping, index, last_index - nrpages, fbatch);
 	}
 	if (!folio_batch_count(fbatch)) {
 		if (iocb->ki_flags & (IOCB_NOWAIT | IOCB_WAITQ))
