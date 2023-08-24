@@ -124,15 +124,14 @@ static unsigned long zram_get_element(struct zram *zram, u32 index)
 
 static size_t zram_get_obj_size(struct zram *zram, u32 index)
 {
-	return zram->table[index].flags & (BIT(ZRAM_FLAG_SHIFT) - 1);
+	return zram->table[index].flags & ZRAM_FLAG_SIZE_MASK;
 }
 
 static void zram_set_obj_size(struct zram *zram,
 					u32 index, size_t size)
 {
-	unsigned long flags = zram->table[index].flags >> ZRAM_FLAG_SHIFT;
-
-	zram->table[index].flags = (flags << ZRAM_FLAG_SHIFT) | size;
+	zram->table[index].flags = size |
+		(zram->table[index].flags & ~ZRAM_FLAG_SIZE_MASK);
 }
 
 static inline bool zram_allocated(struct zram *zram, u32 index)

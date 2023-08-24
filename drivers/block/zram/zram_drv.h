@@ -39,6 +39,7 @@
  * We use BUILD_BUG_ON() to make sure that zram pageflags don't overflow.
  */
 #define ZRAM_FLAG_SHIFT (PAGE_SHIFT + 1)
+#define ZRAM_FLAG_SIZE_MASK (BIT(ZRAM_FLAG_SHIFT) - 1)
 
 /* Only 2 bits are allowed for comp priority index */
 #define ZRAM_COMP_PRIORITY_MASK	0x3
