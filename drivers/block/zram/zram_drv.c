@@ -606,6 +606,7 @@ static ssize_t writeback_store(struct device *dev,
 	ssize_t ret = len;
 	int mode, err;
 	unsigned long blk_idx = 0;
+	bool blk_allocated = false;
 
 	if (sysfs_streq(buf, "idle"))
 		mode = IDLE_WRITEBACK;
@@ -653,12 +654,13 @@ static ssize_t writeback_store(struct device *dev,
 		}
 		spin_unlock(&zram->wb_limit_lock);
 
-		if (!blk_idx) {
+		if (!blk_allocated) {
 			blk_idx = alloc_block_bdev(zram);
 			if (!blk_idx) {
 				ret = -ENOSPC;
 				break;
 			}
+			blk_allocated = true;
 		}
 
 		zram_slot_lock(zram, index);
@@ -745,7 +747,7 @@ static ssize_t writeback_store(struct device *dev,
 		zram_clear_flag(zram, index, ZRAM_UNDER_WB);
 		zram_set_flag(zram, index, ZRAM_WB);
 		zram_set_element(zram, index, blk_idx);
-		blk_idx = 0;
+		blk_allocated = false;
 		atomic64_inc(&zram->stats.pages_stored);
 		spin_lock(&zram->wb_limit_lock);
 		if (zram->wb_limit_enable && zram->bd_wb_limit > 0)
@@ -755,7 +757,7 @@ next:
 		zram_slot_unlock(zram, index);
 	}
 
-	if (blk_idx)
+	if (blk_allocated)
 		free_block_bdev(zram, blk_idx);
 	__free_page(page);
 release_init_lock:
