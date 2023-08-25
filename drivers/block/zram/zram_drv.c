@@ -555,7 +555,8 @@ static unsigned long alloc_block_bdev(struct zram *zram)
 	unsigned long blk_idx = 1;
 retry:
 	/* skip 0 bit to confuse zram.handle = 0 */
-	blk_idx = find_next_zero_bit(zram->bitmap, zram->nr_pages, blk_idx);
+	blk_idx = bitmap_find_next_zero_area(zram->bitmap, zram->nr_pages, blk_idx,
+					     1, 0);
 	if (blk_idx == zram->nr_pages)
 		return 0;
 
