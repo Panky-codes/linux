@@ -284,6 +284,7 @@ void filemap_remove_folio(struct folio *folio)
 static void page_cache_delete_batch(struct address_space *mapping,
 			     struct folio_batch *fbatch)
 {
+	unsigned int min_order = mapping_min_folio_order(mapping);
 	XA_STATE(xas, &mapping->i_pages, fbatch->folios[0]->index);
 	long total_pages = 0;
 	int i = 0;
@@ -312,6 +313,11 @@ static void page_cache_delete_batch(struct address_space *mapping,
 
 		WARN_ON_ONCE(!folio_test_locked(folio));
 
+		/* hugetlb pages are represented by a single entry in the xarray */
+		if (!folio_test_hugetlb(folio)) {
+			VM_BUG_ON_FOLIO(folio_order(folio) < min_order, folio);
+			xas_set_order(&xas, folio->index, folio_order(folio));
+		}
 		folio->mapping = NULL;
 		/* Leave folio->index set: truncation lookup relies on it */
 
@@ -812,12 +818,14 @@ EXPORT_SYMBOL(file_write_and_wait_range);
 void replace_page_cache_folio(struct folio *old, struct folio *new)
 {
 	struct address_space *mapping = old->mapping;
+	unsigned int min_order = mapping_min_folio_order(mapping);
 	void (*free_folio)(struct folio *) = mapping->a_ops->free_folio;
 	pgoff_t offset = old->index;
 	XA_STATE(xas, &mapping->i_pages, offset);
 
 	VM_BUG_ON_FOLIO(!folio_test_locked(old), old);
 	VM_BUG_ON_FOLIO(!folio_test_locked(new), new);
+	VM_BUG_ON_FOLIO(folio_order(new) != folio_order(old), new);
 	VM_BUG_ON_FOLIO(new->mapping, new);
 
 	folio_get(new);
@@ -825,6 +833,11 @@ void replace_page_cache_folio(struct folio *old, struct folio *new)
 	new->index = offset;
 
 	mem_cgroup_migrate(old, new);
+
+	if (!folio_test_hugetlb(new)) {
+		VM_BUG_ON_FOLIO(folio_order(new) < min_order, new);
+		xas_set_order(&xas, offset, folio_order(new));
+	}
 
 	xas_lock_irq(&xas);
 	xas_store(&xas, new);
@@ -3173,13 +3186,9 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 	struct file *file = vmf->vma->vm_file;
 	struct file_ra_state *ra = &file->f_ra;
 	struct address_space *mapping = file->f_mapping;
-	pgoff_t index = vmf->pgoff;
 	int order = mapping_min_folio_order(mapping);
 	unsigned int nrpages = 1U << order;
-
-	if (order > 0)
-		index = round_down(index, nrpages);
-
+	pgoff_t index = round_down(vmf->pgoff, nrpages);
 	DEFINE_READAHEAD(ractl, file, ra, mapping, index);
 	struct file *fpin = NULL;
 	unsigned long vm_flags = vmf->vma->vm_flags;
@@ -3232,12 +3241,11 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 	 */
 	fpin = maybe_unlock_mmap_for_io(vmf, fpin);
 	ra->start = max_t(long, 0, vmf->pgoff - ra->ra_pages / 2);
-	if (order > 0)
-		ra->start = round_down(ra->start, nrpages);
+	ra->start = round_down(ra->start, nrpages);
 	ra->size = ra->ra_pages;
 	ra->async_size = ra->ra_pages / 4;
 	ractl._index = ra->start;
-	page_cache_ra_order(&ractl, ra, 0);
+	page_cache_ra_order(&ractl, ra, order);
 	return fpin;
 }
 
@@ -3251,13 +3259,9 @@ static struct file *do_async_mmap_readahead(struct vm_fault *vmf,
 {
 	struct file *file = vmf->vma->vm_file;
 	struct file_ra_state *ra = &file->f_ra;
-	pgoff_t index = vmf->pgoff;
 	int order = mapping_min_folio_order(file->f_mapping);
 	unsigned int nrpages = 1U << order;
-
-	if (order > 0)
-		index = round_down(index, nrpages);
-
+	pgoff_t index = round_down(vmf->pgoff, nrpages);
 	DEFINE_READAHEAD(ractl, file, ra, file->f_mapping, index);
 	struct file *fpin = NULL;
 	unsigned int mmap_miss;
@@ -3306,13 +3310,17 @@ vm_fault_t filemap_fault(struct vm_fault *vmf)
 	struct file *file = vmf->vma->vm_file;
 	struct file *fpin = NULL;
 	struct address_space *mapping = file->f_mapping;
+	unsigned int min_order = mapping_min_folio_order(mapping);
+	unsigned int nrpages = 1UL << min_order;
 	struct inode *inode = mapping->host;
-	pgoff_t max_idx, index = vmf->pgoff;
+	pgoff_t max_idx, index = round_down(vmf->pgoff, nrpages);
 	struct folio *folio;
 	vm_fault_t ret = 0;
 	bool mapping_locked = false;
 
 	max_idx = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
+	if (min_order)
+		max_idx = round_up(max_idx, nrpages);
 	if (unlikely(index >= max_idx))
 		return VM_FAULT_SIGBUS;
 
@@ -3404,13 +3412,17 @@ retry_find:
 	 * We must recheck i_size under page lock.
 	 */
 	max_idx = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
+	if (min_order)
+		max_idx = round_up(max_idx, nrpages);
 	if (unlikely(index >= max_idx)) {
 		folio_unlock(folio);
 		folio_put(folio);
 		return VM_FAULT_SIGBUS;
 	}
 
-	vmf->page = folio_file_page(folio, index);
+	VM_BUG_ON_FOLIO(folio_order(folio) < min_order, folio);
+
+	vmf->page = folio_file_page(folio, vmf->pgoff);
 	return ret | VM_FAULT_LOCKED;
 
 page_not_uptodate:
