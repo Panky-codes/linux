@@ -511,15 +511,18 @@ EXPORT_SYMBOL(truncate_inode_pages_final);
 unsigned long mapping_try_invalidate(struct address_space *mapping,
 		pgoff_t start, pgoff_t end, unsigned long *nr_failed)
 {
+	unsigned int min_order = mapping_min_folio_order(mapping);
+	unsigned int nrpages = 1UL << min_order;
 	pgoff_t indices[PAGEVEC_SIZE];
 	struct folio_batch fbatch;
-	pgoff_t index = start;
+	pgoff_t index = round_up(start, nrpages);
+	pgoff_t end_idx = round_down(end, nrpages);
 	unsigned long ret;
 	unsigned long count = 0;
 	int i;
 
 	folio_batch_init(&fbatch);
-	while (find_lock_entries(mapping, &index, end, &fbatch, indices)) {
+	while (find_lock_entries(mapping, &index, end_idx, &fbatch, indices)) {
 		for (i = 0; i < folio_batch_count(&fbatch); i++) {
 			struct folio *folio = fbatch.folios[i];
 
