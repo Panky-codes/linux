@@ -635,9 +635,11 @@ static int folio_launder(struct address_space *mapping, struct folio *folio)
 int invalidate_inode_pages2_range(struct address_space *mapping,
 				  pgoff_t start, pgoff_t end)
 {
+	unsigned int min_order = mapping_min_folio_order(mapping);
+	unsigned int nrpages = 1UL << min_order;
 	pgoff_t indices[PAGEVEC_SIZE];
 	struct folio_batch fbatch;
-	pgoff_t index;
+	pgoff_t index, end_idx;
 	int i;
 	int ret = 0;
 	int ret2 = 0;
@@ -647,8 +649,9 @@ int invalidate_inode_pages2_range(struct address_space *mapping,
 		return 0;
 
 	folio_batch_init(&fbatch);
-	index = start;
-	while (find_get_entries(mapping, &index, end, &fbatch, indices)) {
+	index = round_up(start, nrpages);
+	end_idx = round_down(end, nrpages);
+	while (find_get_entries(mapping, &index, end_idx, &fbatch, indices)) {
 		for (i = 0; i < folio_batch_count(&fbatch); i++) {
 			struct folio *folio = fbatch.folios[i];
 
@@ -677,6 +680,8 @@ int invalidate_inode_pages2_range(struct address_space *mapping,
 				continue;
 			}
 			VM_BUG_ON_FOLIO(!folio_contains(folio, indices[i]), folio);
+			VM_BUG_ON_FOLIO(folio_order(folio) < min_order, folio);
+			VM_BUG_ON_FOLIO(folio->index & (nrpages - 1), folio);
 			folio_wait_writeback(folio);
 
 			if (folio_mapped(folio))
