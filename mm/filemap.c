@@ -2301,7 +2301,9 @@ EXPORT_SYMBOL(filemap_get_folios_contig);
 unsigned filemap_get_folios_tag(struct address_space *mapping, pgoff_t *start,
 			pgoff_t end, xa_mark_t tag, struct folio_batch *fbatch)
 {
-	XA_STATE(xas, &mapping->i_pages, *start);
+	unsigned int min_order = mapping_min_folio_order(mapping);
+	unsigned int nrpages = 1UL << min_order;
+	XA_STATE(xas, &mapping->i_pages, round_down(*start, nrpages));
 	struct folio *folio;
 
 	rcu_read_lock();
@@ -2318,6 +2320,11 @@ unsigned filemap_get_folios_tag(struct address_space *mapping, pgoff_t *start,
 
 			if (folio_test_hugetlb(folio))
 				nr = 1;
+			else {
+				VM_BUG_ON_FOLIO(folio_order(folio) < min_order, folio);
+				VM_BUG_ON_FOLIO(folio->index & (nrpages - 1), folio);
+			}
+
 			*start = folio->index + nr;
 			goto out;
 		}
