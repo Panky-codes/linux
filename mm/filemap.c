@@ -1887,9 +1887,9 @@ struct folio *__filemap_get_folio(struct address_space *mapping, pgoff_t index,
 		fgf_t fgp_flags, gfp_t gfp)
 {
 	struct folio *folio;
-       int min_order = mapping_min_folio_order(mapping);
-       int nr_of_pages = (1U << min_order);
-
+	int min_order = mapping_min_folio_order(mapping);
+	int nr_of_pages = (1U << min_order);
+	index = round_down(index, nr_of_pages);
 
 repeat:
 	folio = filemap_get_entry(mapping, index);
@@ -1948,8 +1948,6 @@ no_page:
 		if (order > MAX_PAGECACHE_ORDER)
 			order = MAX_PAGECACHE_ORDER;
 
-		if (min_order)
-			index = round_down(index, nr_of_pages);
 		/* If we're not aligned, allocate a smaller folio */
 		if (index & ((1UL << order) - 1))
 			order = __ffs(index);
