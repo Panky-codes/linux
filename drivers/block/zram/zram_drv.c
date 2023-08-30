@@ -550,20 +550,18 @@ out:
 	return err;
 }
 
-static unsigned long alloc_block_bdev(struct zram *zram)
+static unsigned long alloc_block_bdev_range(struct zram *zram,
+					    unsigned int nr_of_blocks)
 {
 	unsigned long blk_idx = 1;
-retry:
 	/* skip 0 bit to confuse zram.handle = 0 */
-	blk_idx = bitmap_find_next_zero_area(zram->bitmap, zram->nr_pages, blk_idx,
-					     1, 0);
-	if (blk_idx == zram->nr_pages)
+	blk_idx = bitmap_find_next_zero_area(zram->bitmap, zram->nr_pages,
+					     blk_idx, nr_of_blocks, 0);
+	if ((blk_idx + nr_of_blocks) > zram->nr_pages)
 		return 0;
 
-	if (test_and_set_bit(blk_idx, zram->bitmap))
-		goto retry;
-
-	atomic64_inc(&zram->stats.bd_count);
+	bitmap_set(zram->bitmap, blk_idx, nr_of_blocks);
+	atomic64_add(nr_of_blocks, &zram->stats.bd_count);
 	return blk_idx;
 }
 
@@ -656,7 +654,7 @@ static ssize_t writeback_store(struct device *dev,
 		spin_unlock(&zram->wb_limit_lock);
 
 		if (!blk_allocated) {
-			blk_idx = alloc_block_bdev(zram);
+			blk_idx = alloc_block_bdev_range(zram, 1);
 			if (!blk_idx) {
 				ret = -ENOSPC;
 				break;
