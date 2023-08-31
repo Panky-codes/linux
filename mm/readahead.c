@@ -344,6 +344,7 @@ void force_page_cache_ra(struct readahead_control *ractl,
 		if (this_chunk > nr_to_read)
 			this_chunk = nr_to_read;
 		ractl->_index = index;
+		VM_BUG_ON(index & (nr_of_pages - 1));
 		do_page_cache_ra(ractl, this_chunk, 0);
 
 		index += this_chunk;
@@ -380,8 +381,10 @@ static unsigned long get_init_ra_size(unsigned long size,
 		if (min_nrpages <= max)
 			newsize = min_nrpages;
 		else
-			newsize = max;
+			newsize = round_up(max, min_nrpages);
 	}
+
+	VM_BUG_ON(newsize & (min_nrpages - 1));
 
 	return newsize;
 }
@@ -396,6 +399,8 @@ static unsigned long get_next_ra_size(struct file_ra_state *ra,
 {
 	unsigned int min_nrpages = 1UL << min_order;
 	unsigned long cur = max(ra->size, min_nrpages);
+
+	cur = round_down(cur, min_nrpages);
 
 	if (cur < max / 16)
 		return 4 * cur;
@@ -534,8 +539,7 @@ void page_cache_ra_order(struct readahead_control *ractl,
 		goto fallback;
 
 	limit = min(limit, index + ra->size - 1);
-	if (min_order)
-		limit = round_up(limit, min_nrpages) - 1;
+	limit = round_up(limit, min_nrpages) - 1;
 
 	if (new_order < MAX_PAGECACHE_ORDER) {
 		new_order += 2;
@@ -570,7 +574,7 @@ void page_cache_ra_order(struct readahead_control *ractl,
 			order--;
 
 		VM_BUG_ON(index & (min_nrpages - 1));
-		VM_BUG_ON(index & (order - 1));
+		VM_BUG_ON(index & ((1UL << order) - 1));
 
 		err = ra_alloc_folio(ractl, index, mark, order, gfp);
 		if (err)
@@ -610,7 +614,10 @@ static void ondemand_readahead(struct readahead_control *ractl,
 	pgoff_t index = readahead_index(ractl);
 	pgoff_t expected, prev_index;
 	unsigned int min_order = mapping_min_folio_order(ractl->mapping);
+	unsigned int min_nrpages = 1UL << min_order;
 	unsigned int order = folio ? folio_order(folio) : min_order;
+
+	VM_BUG_ON(ractl->_index & (min_nrpages - 1));
 
 	/*
 	 * If the request exceeds the readahead window, allow the read to
@@ -632,9 +639,13 @@ static void ondemand_readahead(struct readahead_control *ractl,
 	expected = round_up(ra->start + ra->size - ra->async_size,
 			1UL << order);
 	if (index == expected || index == (ra->start + ra->size)) {
-		ra->start += ra->size;
+		ra->start += round_down(ra->size, min_nrpages);
 		ra->size = get_next_ra_size(ra, min_order, max_pages);
 		ra->async_size = ra->size;
+
+		VM_BUG_ON(ra->size & ((1UL << min_order) - 1));
+		VM_BUG_ON(ra->start & ((1UL << min_order) - 1));
+
 		goto readit;
 	}
 
@@ -652,16 +663,18 @@ static void ondemand_readahead(struct readahead_control *ractl,
 				max_pages);
 		rcu_read_unlock();
 
-		if (min_order)
-			start = round_down(start, 1U << min_order);
+		start = round_down(start, min_nrpages);
 
+		VM_BUG_ON(start & (min_nrpages - 1));
+		VM_BUG_ON(folio->index & (folio_nr_pages(folio) - 1));
 
 		if (!start || start - index > max_pages)
 			return;
 
 		ra->start = start;
 		ra->size = start - index;	/* old async_size */
-		ra->size += req_size;
+		VM_BUG_ON(ra->size & (min_nrpages - 1));
+		ra->size += round_up(req_size, min_nrpages);
 		ra->size = get_next_ra_size(ra, min_order, max_pages);
 		ra->async_size = ra->size;
 		goto readit;
@@ -721,12 +734,15 @@ readit:
 	}
 
 	ractl->_index = ra->start;
+	VM_BUG_ON(ractl->_index & (min_nrpages - 1));
 	page_cache_ra_order(ractl, ra, order);
 }
 
 void page_cache_sync_ra(struct readahead_control *ractl,
 		unsigned long req_count)
 {
+	unsigned int min_order = mapping_min_folio_order(ractl->mapping);
+	unsigned int nrpages = 1UL << min_order;
 	bool do_forced_ra = ractl->file && (ractl->file->f_mode & FMODE_RANDOM);
 
 	/*
@@ -748,6 +764,8 @@ void page_cache_sync_ra(struct readahead_control *ractl,
 		return;
 	}
 
+	VM_BUG_ON(readahead_index(ractl) & (nrpages - 1));
+
 	ondemand_readahead(ractl, NULL, req_count);
 }
 EXPORT_SYMBOL_GPL(page_cache_sync_ra);
@@ -755,6 +773,9 @@ EXPORT_SYMBOL_GPL(page_cache_sync_ra);
 void page_cache_async_ra(struct readahead_control *ractl,
 		struct folio *folio, unsigned long req_count)
 {
+	unsigned int min_order = mapping_min_folio_order(ractl->mapping);
+	unsigned int nrpages = 1UL << min_order;
+
 	/* no readahead */
 	if (!ractl->ra->ra_pages)
 		return;
@@ -769,6 +790,8 @@ void page_cache_async_ra(struct readahead_control *ractl,
 
 	if (blk_cgroup_congested())
 		return;
+
+	VM_BUG_ON(readahead_index(ractl) & (nrpages - 1));
 
 	ondemand_readahead(ractl, folio, req_count);
 }
