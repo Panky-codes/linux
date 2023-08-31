@@ -345,7 +345,7 @@ void truncate_inode_pages_range(struct address_space *mapping,
 	struct folio	*folio;
 	bool		same_folio;
 	unsigned int order = mapping_min_folio_order(mapping);
-	unsigned int nrpages  = 1U << order;
+	unsigned int nrpages = 1U << order;
 
 	if (mapping_empty(mapping))
 		return;
@@ -356,9 +356,8 @@ void truncate_inode_pages_range(struct address_space *mapping,
 	 * start of the range and 'partial_end' at the end of the range.
 	 * Note that 'end' is exclusive while 'lend' is inclusive.
 	 */
-	start = (lstart + PAGE_SIZE - 1) >> PAGE_SHIFT;
-	if (order > 0)
-		start = round_down(start, nrpages);
+	start = (lstart + (nrpages * PAGE_SIZE) - 1) >> PAGE_SHIFT;
+	start = round_down(start, nrpages);
 
 	if (lend == -1)
 		/*
@@ -368,7 +367,7 @@ void truncate_inode_pages_range(struct address_space *mapping,
 		 */
 		end = -1;
 	else
-		end = (lend + 1) >> PAGE_SHIFT;
+		end = round_down((lend + 1) >> PAGE_SHIFT, nrpages);
 
 	folio_batch_init(&fbatch);
 	index = start;
