@@ -2597,8 +2597,7 @@ static int filemap_get_pages(struct kiocb *iocb, size_t count,
 
 	/* "last_index" is the index of the page beyond the end of the read */
 	last_index = DIV_ROUND_UP(iocb->ki_pos + count, PAGE_SIZE);
-	if (min_order)
-		last_index += round_up(last_index, nrpages) - 1;
+	last_index = round_up(last_index, nrpages);
 retry:
 	if (fatal_signal_pending(current))
 		return -EINTR;
