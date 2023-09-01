@@ -1971,6 +1971,9 @@ no_page:
 			while ((index & ((1UL << order) - 1)) != 0)
 				order--;
 
+			if (order < min_order)
+				order = min_order;
+
 			VM_BUG_ON(order < min_order);
 			VM_BUG_ON(index & (nr_of_pages - 1));
 			VM_BUG_ON(index & ((1UL << order) - 1));

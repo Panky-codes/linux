@@ -573,6 +573,9 @@ void page_cache_ra_order(struct readahead_control *ractl,
 		while ((index & ((1UL << order) - 1)) != 0)
 			order--;
 
+		if (order < min_order)
+			order = min_order;
+
 		VM_BUG_ON(index & (min_nrpages - 1));
 		VM_BUG_ON(index & ((1UL << order) - 1));
 
