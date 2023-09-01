@@ -34,13 +34,13 @@ static inline void __clear_shadow_entry(struct address_space *mapping,
 	unsigned int min_order = mapping_min_folio_order(mapping);
 	XA_STATE(xas, &mapping->i_pages, index);
 	unsigned int order = xa_get_order(xas.xa, xas.xa_index);
-	unsigned int nrpages = 1UL << order;
+	unsigned int min_nrpages = 1UL << min_order;
 
 	xas_set_update(&xas, workingset_update_node);
 	if (xas_load(&xas) != entry)
 		return;
 
-	VM_BUG_ON(index & (nrpages - 1));
+	VM_BUG_ON(index & (min_nrpages - 1));
 	VM_BUG_ON(order < min_order);
 
 	xas_store(&xas, NULL);
