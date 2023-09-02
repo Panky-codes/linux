@@ -574,6 +574,13 @@ static void free_block_bdev(struct zram *zram, unsigned long blk_idx)
 	atomic64_dec(&zram->stats.bd_count);
 }
 
+static void free_block_bdev_range(struct zram *zram, unsigned long blk_idx,
+				  unsigned int nr_of_blocks)
+{
+	for (unsigned long i = blk_idx; i < nr_of_blocks; i++)
+		free_block_bdev(zram, i);
+}
+
 static void read_from_bdev_async(struct zram *zram, struct page *page,
 			unsigned long entry, struct bio *parent)
 {
