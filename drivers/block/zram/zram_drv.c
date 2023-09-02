@@ -600,6 +600,14 @@ static void read_from_bdev_async(struct zram *zram, struct page *page,
 #define IDLE_WRITEBACK			(1<<1)
 #define INCOMPRESSIBLE_WRITEBACK	(1<<2)
 
+#define MAX_INDEX_ENTRIES_ORDER 5
+#define MAX_INDEX_ENTRIES (1U << MAX_INDEX_ENTRIES_ORDER)
+struct index_mapping {
+	/* Cap the maximum indices to 32 before we flush */
+	unsigned long arr[MAX_INDEX_ENTRIES];
+	unsigned int nr_of_entries;
+};
+
 /*
  * Returns: true if the index was prepared for further processing
  *          false if the index can be skipped
@@ -640,19 +648,89 @@ skip:
 	return ret;
 }
 
+static int writeback_flush_to_bdev(struct zram *zram, struct folio *folio,
+				struct index_mapping *map,
+				unsigned long blk_idx, unsigned int io_pages)
+{
+	struct bio bio;
+	struct bio_vec bio_vec;
+	int ret = 0;
+
+	if (!map->nr_of_entries)
+		return ret;
+
+	bio_init(&bio, zram->bdev, &bio_vec, 1, REQ_OP_WRITE | REQ_SYNC);
+	bio.bi_iter.bi_sector = blk_idx * (PAGE_SIZE >> 9);
+	// XXX: I can use nofail version as (io_pages* PAGE_SIZE)
+	// can never be 4G and offset is always 0
+	if (!bio_add_folio(&bio, folio, io_pages * PAGE_SIZE, 0))
+		BUG();
+
+	ret = submit_bio_wait(&bio);
+	if (ret) {
+		for (int iter = 0; iter < map->nr_of_entries; iter++) {
+			zram_slot_lock(zram, map->arr[iter]);
+			zram_clear_flag(zram, map->arr[iter], ZRAM_UNDER_WB);
+			zram_clear_flag(zram, map->arr[iter], ZRAM_IDLE);
+			zram_slot_unlock(zram, map->arr[iter]);
+		}
+		free_block_bdev_range(zram, blk_idx, map->nr_of_entries);
+		return ret;
+	}
+
+	atomic64_add(map->nr_of_entries, &zram->stats.bd_writes);
+	/*
+	 * We released zram_slot_lock so need to check if the slot was
+	 * changed. If there is freeing for the slot, we can catch it
+	 * easily by zram_allocated.
+	 * A subtle case is the slot is freed/reallocated/marked as
+	 * ZRAM_IDLE again. To close the race, idle_store doesn't
+	 * mark ZRAM_IDLE once it found the slot was ZRAM_UNDER_WB.
+	 * Thus, we could close the race by checking ZRAM_IDLE bit.
+	 */
+	for (int iter = 0; iter < map->nr_of_entries; iter++) {
+		zram_slot_lock(zram, map->arr[iter]);
+		if (!zram_allocated(zram, map->arr[iter]) ||
+		    !zram_test_flag(zram, map->arr[iter], ZRAM_IDLE)) {
+			zram_clear_flag(zram, map->arr[iter], ZRAM_UNDER_WB);
+			zram_clear_flag(zram, map->arr[iter], ZRAM_IDLE);
+			zram_slot_unlock(zram, map->arr[iter]);
+			free_block_bdev(zram, blk_idx + iter);
+			continue;
+		}
+
+		zram_free_page(zram, map->arr[iter]);
+		zram_clear_flag(zram, map->arr[iter], ZRAM_UNDER_WB);
+		zram_set_flag(zram, map->arr[iter], ZRAM_WB);
+		zram_set_element(zram, map->arr[iter], blk_idx + iter);
+		zram_slot_unlock(zram, map->arr[iter]);
+		atomic64_inc(&zram->stats.pages_stored);
+
+		spin_lock(&zram->wb_limit_lock);
+		if (zram->wb_limit_enable && zram->bd_wb_limit > 0)
+			zram->bd_wb_limit -= 1UL << (PAGE_SHIFT - 12);
+		spin_unlock(&zram->wb_limit_lock);
+	}
+	return ret;
+}
+
 static ssize_t writeback_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t len)
 {
 	struct zram *zram = dev_to_zram(dev);
 	unsigned long nr_pages = zram->disksize >> PAGE_SHIFT;
 	unsigned long index = 0;
-	struct bio bio;
-	struct bio_vec bio_vec;
 	struct page *page;
+	struct folio* folio;
 	ssize_t ret = len;
 	int mode, err;
-	unsigned long blk_idx = 0;
+	unsigned long blk_idx;
+	unsigned int io_pages;
 	bool blk_allocated = false;
+	u64 bd_wb_limit_pages = ULONG_MAX;
+	struct index_mapping map = {};
+	unsigned int order = min(MAX_INDEX_ENTRIES_ORDER,
+				 ilog2(zram->bdev->bd_disk->bdi->io_pages));
 
 	if (sysfs_streq(buf, "idle"))
 		mode = IDLE_WRITEBACK;
@@ -685,23 +763,30 @@ static ssize_t writeback_store(struct device *dev,
 		goto release_init_lock;
 	}
 
-	page = alloc_page(GFP_KERNEL);
-	if (!page) {
+	folio = folio_alloc(GFP_KERNEL, order);
+	if (!folio) {
 		ret = -ENOMEM;
 		goto release_init_lock;
 	}
 
 	for (; nr_pages != 0; index++, nr_pages--) {
 		spin_lock(&zram->wb_limit_lock);
-		if (zram->wb_limit_enable && !zram->bd_wb_limit) {
-			spin_unlock(&zram->wb_limit_lock);
-			ret = -EIO;
-			break;
+		if (zram->wb_limit_enable) {
+			if (!zram->bd_wb_limit) {
+				spin_unlock(&zram->wb_limit_lock);
+				ret = -EIO;
+				break;
+			}
+			bd_wb_limit_pages = zram->bd_wb_limit >>
+					    (PAGE_SHIFT - 12);
 		}
 		spin_unlock(&zram->wb_limit_lock);
 
 		if (!blk_allocated) {
-			blk_idx = alloc_block_bdev_range(zram, 1);
+			io_pages = min(1UL << order, nr_pages);
+			io_pages = min_t(u64, bd_wb_limit_pages, io_pages);
+
+			blk_idx = alloc_block_bdev_range(zram, io_pages);
 			if (!blk_idx) {
 				ret = -ENOSPC;
 				break;
@@ -709,11 +794,18 @@ static ssize_t writeback_store(struct device *dev,
 			blk_allocated = true;
 		}
 
-		if (!writeback_prep_or_skip_index(zram, mode, index))
+		if (!writeback_prep_or_skip_index(zram, mode, index)) {
+			if (nr_pages > 1 || map.nr_of_entries == 0)
+				continue;
+			/* There are still some unfinished IOs that
+			 * needs to be flushed
+			 */
+			err = writeback_flush_to_bdev(zram, folio, &map,
+						      blk_idx, io_pages);
 			goto next;
+		}
 
-			goto next;
-
+		page = folio_page(folio, map.nr_of_entries);
 		if (zram_read_page(zram, page, index, NULL)) {
 			zram_slot_lock(zram, index);
 			zram_clear_flag(zram, index, ZRAM_UNDER_WB);
@@ -722,68 +814,26 @@ static ssize_t writeback_store(struct device *dev,
 			continue;
 		}
 
-		bio_init(&bio, zram->bdev, &bio_vec, 1,
-			 REQ_OP_WRITE | REQ_SYNC);
-		bio.bi_iter.bi_sector = blk_idx * (PAGE_SIZE >> 9);
-		__bio_add_page(&bio, page, PAGE_SIZE, 0);
-
-		/*
-		 * XXX: A single page IO would be inefficient for write
-		 * but it would be not bad as starter.
-		 */
-		err = submit_bio_wait(&bio);
-		if (err) {
-			zram_slot_lock(zram, index);
-			zram_clear_flag(zram, index, ZRAM_UNDER_WB);
-			zram_clear_flag(zram, index, ZRAM_IDLE);
-			zram_slot_unlock(zram, index);
-			/*
-			 * BIO errors are not fatal, we continue and simply
-			 * attempt to writeback the remaining objects (pages).
-			 * At the same time we need to signal user-space that
-			 * some writes (at least one, but also could be all of
-			 * them) were not successful and we do so by returning
-			 * the most recent BIO error.
-			 */
-			ret = err;
+		map.arr[map.nr_of_entries++] = index;
+		if (map.nr_of_entries < io_pages && nr_pages > 1)
 			continue;
-		}
 
-		atomic64_inc(&zram->stats.bd_writes);
-		/*
-		 * We released zram_slot_lock so need to check if the slot was
-		 * changed. If there is freeing for the slot, we can catch it
-		 * easily by zram_allocated.
-		 * A subtle case is the slot is freed/reallocated/marked as
-		 * ZRAM_IDLE again. To close the race, idle_store doesn't
-		 * mark ZRAM_IDLE once it found the slot was ZRAM_UNDER_WB.
-		 * Thus, we could close the race by checking ZRAM_IDLE bit.
-		 */
-		zram_slot_lock(zram, index);
-		if (!zram_allocated(zram, index) ||
-			  !zram_test_flag(zram, index, ZRAM_IDLE)) {
-			zram_clear_flag(zram, index, ZRAM_UNDER_WB);
-			zram_clear_flag(zram, index, ZRAM_IDLE);
-			goto next;
-		}
-
-		zram_free_page(zram, index);
-		zram_clear_flag(zram, index, ZRAM_UNDER_WB);
-		zram_set_flag(zram, index, ZRAM_WB);
-		zram_set_element(zram, index, blk_idx);
-		blk_allocated = false;
-		atomic64_inc(&zram->stats.pages_stored);
-		spin_lock(&zram->wb_limit_lock);
-		if (zram->wb_limit_enable && zram->bd_wb_limit > 0)
-			zram->bd_wb_limit -=  1UL << (PAGE_SHIFT - 12);
-		spin_unlock(&zram->wb_limit_lock);
+		err = writeback_flush_to_bdev(zram, folio, &map, blk_idx,
+					      io_pages);
 next:
-		zram_slot_unlock(zram, index);
+		if (err)
+			ret = err;
+
+		if (map.nr_of_entries == io_pages) {
+			blk_allocated = false;
+			map.nr_of_entries = 0;
+		}
 	}
 
 	if (blk_allocated)
-		free_block_bdev(zram, blk_idx);
-	__free_page(page);
+		free_block_bdev_range(zram, blk_idx + map.nr_of_entries,
+				      io_pages - map.nr_of_entries);
+	folio_put(folio);
 release_init_lock:
 	up_read(&zram->init_lock);
 
