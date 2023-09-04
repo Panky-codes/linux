@@ -127,6 +127,7 @@
 static void page_cache_delete(struct address_space *mapping,
 				   struct folio *folio, void *shadow)
 {
+	unsigned int min_order = mapping_min_folio_order(mapping);
 	XA_STATE(xas, &mapping->i_pages, folio->index);
 	long nr = 1;
 
@@ -135,6 +136,7 @@ static void page_cache_delete(struct address_space *mapping,
 	xas_set_order(&xas, folio->index, folio_order(folio));
 	nr = folio_nr_pages(folio);
 
+	VM_BUG_ON_FOLIO(folio_order(folio) < min_order, folio);
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
 
 	xas_store(&xas, shadow);
@@ -277,6 +279,7 @@ void filemap_remove_folio(struct folio *folio)
 static void page_cache_delete_batch(struct address_space *mapping,
 			     struct folio_batch *fbatch)
 {
+	unsigned int min_order = mapping_min_folio_order(mapping);
 	XA_STATE(xas, &mapping->i_pages, fbatch->folios[0]->index);
 	long total_pages = 0;
 	int i = 0;
@@ -305,6 +308,7 @@ static void page_cache_delete_batch(struct address_space *mapping,
 
 		WARN_ON_ONCE(!folio_test_locked(folio));
 
+		VM_BUG_ON_FOLIO(folio_order(folio) < min_order, folio);
 		folio->mapping = NULL;
 		/* Leave folio->index set: truncation lookup relies on it */
 
@@ -846,6 +850,7 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 	int huge = folio_test_hugetlb(folio);
 	bool charged = false;
 	long nr = 1;
+	unsigned int min_order = mapping_min_folio_order(mapping);
 
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
 	VM_BUG_ON_FOLIO(folio_test_swapbacked(folio), folio);
@@ -896,6 +901,7 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 			}
 		}
 
+		VM_BUG_ON_FOLIO(folio_order(folio) < min_order, folio);
 		xas_store(&xas, folio);
 		if (xas_error(&xas))
 			goto unlock;
