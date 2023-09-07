@@ -865,22 +865,26 @@ EXPORT_SYMBOL_GPL(replace_page_cache_folio);
 noinline int __filemap_add_folio(struct address_space *mapping,
 		struct folio *folio, pgoff_t index, gfp_t gfp, void **shadowp)
 {
-	XA_STATE(xas, &mapping->i_pages, index);
+	unsigned int min_order = mapping_min_folio_order(mapping);
+	unsigned int nr_of_pages = (1U << min_order);
+	pgoff_t rounded_index = round_down(index, nr_of_pages);
+	XA_STATE(xas, &mapping->i_pages, rounded_index);
 	int huge = folio_test_hugetlb(folio);
 	bool charged = false;
 	long nr = 1;
 
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
 	VM_BUG_ON_FOLIO(folio_test_swapbacked(folio), folio);
+
 	mapping_set_update(&xas, mapping);
 
 	if (!huge) {
 		int error = mem_cgroup_charge(folio, NULL, gfp);
-		VM_BUG_ON_FOLIO(index & (folio_nr_pages(folio) - 1), folio);
+		VM_BUG_ON_FOLIO(rounded_index & (folio_nr_pages(folio) - 1), folio);
 		if (error)
 			return error;
 		charged = true;
-		xas_set_order(&xas, index, folio_order(folio));
+		xas_set_order(&xas, rounded_index, folio_order(folio));
 		nr = folio_nr_pages(folio);
 	}
 
@@ -918,6 +922,7 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 			}
 		}
 
+		VM_BUG_ON_FOLIO(folio_order(folio) < min_order, folio);
 		xas_store(&xas, folio);
 		if (xas_error(&xas))
 			goto unlock;
@@ -2294,7 +2299,9 @@ EXPORT_SYMBOL(filemap_get_folios_contig);
 unsigned filemap_get_folios_tag(struct address_space *mapping, pgoff_t *start,
 			pgoff_t end, xa_mark_t tag, struct folio_batch *fbatch)
 {
-	XA_STATE(xas, &mapping->i_pages, *start);
+	unsigned int min_order = mapping_min_folio_order(mapping);
+	unsigned int nrpages = 1UL << min_order;
+	XA_STATE(xas, &mapping->i_pages, round_down(*start, nrpages));
 	struct folio *folio;
 
 	rcu_read_lock();
@@ -2311,6 +2318,11 @@ unsigned filemap_get_folios_tag(struct address_space *mapping, pgoff_t *start,
 
 			if (folio_test_hugetlb(folio))
 				nr = 1;
+			else {
+				VM_BUG_ON_FOLIO(folio_order(folio) < min_order, folio);
+				VM_BUG_ON_FOLIO(folio->index & (nrpages - 1), folio);
+			}
+
 			*start = folio->index + nr;
 			goto out;
 		}
