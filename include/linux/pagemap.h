@@ -1328,6 +1328,14 @@ struct readahead_control {
 		._index = i,						\
 	}
 
+#define DEFINE_READAHEAD_ALIGNED(ractl, f, r, m, i)			\
+	struct readahead_control ractl = {				\
+		.file = f,						\
+		.mapping = m,						\
+		.ra = r,						\
+		._index = mapping_align_start_index(m, i),		\
+	}
+
 #define VM_READAHEAD_PAGES	(SZ_128K / PAGE_SIZE)
 
 void page_cache_ra_unbounded(struct readahead_control *,
@@ -1356,7 +1364,7 @@ void page_cache_sync_readahead(struct address_space *mapping,
 		struct file_ra_state *ra, struct file *file, pgoff_t index,
 		unsigned long req_count)
 {
-	DEFINE_READAHEAD(ractl, file, ra, mapping, index);
+	DEFINE_READAHEAD_ALIGNED(ractl, file, ra, mapping, index);
 	page_cache_sync_ra(&ractl, req_count);
 }
 
