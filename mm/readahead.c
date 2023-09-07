@@ -369,10 +369,19 @@ void force_page_cache_ra(struct readahead_control *ractl,
  * for small size, x 4 for medium, and x 2 for large
  * for 128k (32 page) max ra
  * 1-2 page = 16k, 3-4 page 32k, 5-8 page = 64k, > 8 page = 128k initial
+ *
+ * For higher order address space requirements we ensure no initial reads
+ * are ever less than the min number of pages required.
+ *
+ * We *always* cap the max io size allowed by the device.
  */
-static unsigned long get_init_ra_size(unsigned long size, unsigned long max)
+static unsigned long get_init_ra_size(unsigned long size,
+				      unsigned int min_nrpages,
+				      unsigned long max)
 {
 	unsigned long newsize = roundup_pow_of_two(size);
+
+	newsize = max_t(unsigned long, newsize, min_nrpages);
 
 	if (newsize <= max / 32)
 		newsize = newsize * 4;
@@ -380,6 +389,8 @@ static unsigned long get_init_ra_size(unsigned long size, unsigned long max)
 		newsize = newsize * 2;
 	else
 		newsize = max;
+
+	VM_BUG_ON(newsize & (min_nrpages - 1));
 
 	return newsize;
 }
@@ -389,14 +400,16 @@ static unsigned long get_init_ra_size(unsigned long size, unsigned long max)
  *  return it as the new window size.
  */
 static unsigned long get_next_ra_size(struct file_ra_state *ra,
+				      unsigned int min_nrpages,
 				      unsigned long max)
 {
-	unsigned long cur = ra->size;
+	unsigned long cur = max(ra->size, min_nrpages);
 
 	if (cur < max / 16)
 		return 4 * cur;
 	if (cur <= max / 2)
 		return 2 * cur;
+
 	return max;
 }
 
@@ -593,7 +606,11 @@ static void ondemand_readahead(struct readahead_control *ractl,
 	unsigned long add_pages;
 	pgoff_t index = readahead_index(ractl);
 	pgoff_t expected, prev_index;
-	unsigned int order = folio ? folio_order(folio) : 0;
+	unsigned int min_order = mapping_min_folio_order(ractl->mapping);
+	unsigned int min_nrpages = mapping_min_folio_nrpages(ractl->mapping);
+	unsigned int order = folio ? folio_order(folio) : min_order;
+
+	VM_BUG_ON(!IS_ALIGNED(ractl->_index, min_nrpages));
 
 	/*
 	 * If the request exceeds the readahead window, allow the read to
@@ -615,9 +632,10 @@ static void ondemand_readahead(struct readahead_control *ractl,
 	expected = round_up(ra->start + ra->size - ra->async_size,
 			1UL << order);
 	if (index == expected || index == (ra->start + ra->size)) {
-		ra->start += ra->size;
-		ra->size = get_next_ra_size(ra, max_pages);
+		ra->start += round_down(ra->size, min_nrpages);
+		ra->size = get_next_ra_size(ra, min_nrpages, max_pages);
 		ra->async_size = ra->size;
+
 		goto readit;
 	}
 
@@ -635,13 +653,18 @@ static void ondemand_readahead(struct readahead_control *ractl,
 				max_pages);
 		rcu_read_unlock();
 
+		start = round_down(start, min_nrpages);
+
+		VM_BUG_ON(folio->index & (folio_nr_pages(folio) - 1));
+
 		if (!start || start - index > max_pages)
 			return;
 
 		ra->start = start;
 		ra->size = start - index;	/* old async_size */
+
 		ra->size += req_size;
-		ra->size = get_next_ra_size(ra, max_pages);
+		ra->size = get_next_ra_size(ra, min_nrpages, max_pages);
 		ra->async_size = ra->size;
 		goto readit;
 	}
@@ -678,7 +701,7 @@ static void ondemand_readahead(struct readahead_control *ractl,
 
 initial_readahead:
 	ra->start = index;
-	ra->size = get_init_ra_size(req_size, max_pages);
+	ra->size = get_init_ra_size(req_size, min_nrpages, max_pages);
 	ra->async_size = ra->size > req_size ? ra->size - req_size : ra->size;
 
 readit:
@@ -689,7 +712,7 @@ readit:
 	 * Take care of maximum IO pages as above.
 	 */
 	if (index == ra->start && ra->size == ra->async_size) {
-		add_pages = get_next_ra_size(ra, max_pages);
+		add_pages = get_next_ra_size(ra, min_nrpages, max_pages);
 		if (ra->size + add_pages <= max_pages) {
 			ra->async_size = add_pages;
 			ra->size += add_pages;
@@ -700,6 +723,7 @@ readit:
 	}
 
 	ractl->_index = ra->start;
+	VM_BUG_ON(!IS_ALIGNED(ractl->_index, min_nrpages));
 	page_cache_ra_order(ractl, ra, order);
 }
 
