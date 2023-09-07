@@ -506,6 +506,8 @@ void page_cache_ra_order(struct readahead_control *ractl,
 {
 	struct address_space *mapping = ractl->mapping;
 	pgoff_t index = readahead_index(ractl);
+	unsigned int min_order = mapping_min_folio_order(mapping);
+	unsigned int min_nrpages = 1UL << min_order;
 	pgoff_t limit = (i_size_read(mapping->host) - 1) >> PAGE_SHIFT;
 	pgoff_t mark = index + ra->size - ra->async_size;
 	int err = 0;
@@ -515,6 +517,7 @@ void page_cache_ra_order(struct readahead_control *ractl,
 		goto fallback;
 
 	limit = min(limit, index + ra->size - 1);
+	limit = round_up(limit, min_nrpages) - 1;
 
 	if (new_order < MAX_PAGECACHE_ORDER) {
 		new_order += 2;
@@ -535,10 +538,25 @@ void page_cache_ra_order(struct readahead_control *ractl,
 				order = 0;
 		}
 		/* Don't allocate pages past EOF */
-		while (index + (1UL << order) - 1 > limit) {
-			if (--order == 1)
+		while (order > min_order && index + (1UL << order) - 1 > limit) {
+			order--;
+			if (order == 1)
 				order = 0;
 		}
+
+		/*
+		 * Ensure alignment to the high order folio, this
+		 * in turn ensures alignment to the min order.
+		 */
+		while ((index & ((1UL << order) - 1)) != 0)
+			order--;
+
+		if (order < min_order)
+			order = min_order;
+
+		VM_BUG_ON(index & (min_nrpages - 1));
+		VM_BUG_ON(index & ((1UL << order) - 1));
+
 		err = ra_alloc_folio(ractl, index, mark, order, gfp);
 		if (err)
 			break;
