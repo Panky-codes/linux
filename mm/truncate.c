@@ -337,6 +337,8 @@ void truncate_inode_pages_range(struct address_space *mapping,
 	int		i;
 	struct folio	*folio;
 	bool		same_folio;
+	unsigned int order = mapping_min_folio_order(mapping);
+	unsigned int nrpages = 1U << order;
 
 	if (mapping_empty(mapping))
 		return;
@@ -347,7 +349,9 @@ void truncate_inode_pages_range(struct address_space *mapping,
 	 * start of the range and 'partial_end' at the end of the range.
 	 * Note that 'end' is exclusive while 'lend' is inclusive.
 	 */
-	start = (lstart + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	start = (lstart + (nrpages * PAGE_SIZE) - 1) >> PAGE_SHIFT;
+	start = round_down(start, nrpages);
+
 	if (lend == -1)
 		/*
 		 * lend == -1 indicates end-of-file so we have to set 'end'
@@ -356,7 +360,7 @@ void truncate_inode_pages_range(struct address_space *mapping,
 		 */
 		end = -1;
 	else
-		end = (lend + 1) >> PAGE_SHIFT;
+		end = round_down((lend + 1) >> PAGE_SHIFT, nrpages);
 
 	folio_batch_init(&fbatch);
 	index = start;
@@ -372,8 +376,9 @@ void truncate_inode_pages_range(struct address_space *mapping,
 		cond_resched();
 	}
 
-	same_folio = (lstart >> PAGE_SHIFT) == (lend >> PAGE_SHIFT);
-	folio = __filemap_get_folio(mapping, lstart >> PAGE_SHIFT, FGP_LOCK, 0);
+	same_folio = round_down(lstart >> PAGE_SHIFT, nrpages) ==
+		     round_down(lend >> PAGE_SHIFT, nrpages);
+	folio = __filemap_get_folio(mapping, start, FGP_LOCK, 0);
 	if (!IS_ERR(folio)) {
 		same_folio = lend < folio_pos(folio) + folio_size(folio);
 		if (!truncate_inode_partial_folio(folio, lstart, lend)) {
@@ -387,7 +392,8 @@ void truncate_inode_pages_range(struct address_space *mapping,
 	}
 
 	if (!same_folio) {
-		folio = __filemap_get_folio(mapping, lend >> PAGE_SHIFT,
+		folio = __filemap_get_folio(mapping,
+					    round_down(lend >> PAGE_SHIFT, nrpages),
 						FGP_LOCK, 0);
 		if (!IS_ERR(folio)) {
 			if (!truncate_inode_partial_folio(folio, lstart, lend))
