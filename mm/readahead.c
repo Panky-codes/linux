@@ -331,6 +331,7 @@ void force_page_cache_ra(struct readahead_control *ractl,
 	struct file_ra_state *ra = ractl->ra;
 	struct backing_dev_info *bdi = inode_to_bdi(mapping->host);
 	unsigned long max_pages, index;
+	unsigned int min_nrpages = mapping_min_folio_nrpages(mapping);
 
 	if (unlikely(!mapping->a_ops->read_folio && !mapping->a_ops->readahead))
 		return;
@@ -340,6 +341,13 @@ void force_page_cache_ra(struct readahead_control *ractl,
 	 * be up to the optimal hardware IO size
 	 */
 	index = readahead_index(ractl);
+	if (!IS_ALIGNED(index, min_nrpages)) {
+		unsigned long old_index = index;
+
+		index = round_down(index, min_nrpages);
+		nr_to_read += (old_index - index);
+	}
+
 	max_pages = max_t(unsigned long, bdi->io_pages, ra->ra_pages);
 	nr_to_read = min_t(unsigned long, nr_to_read, max_pages);
 	while (nr_to_read) {
@@ -348,6 +356,7 @@ void force_page_cache_ra(struct readahead_control *ractl,
 		if (this_chunk > nr_to_read)
 			this_chunk = nr_to_read;
 		ractl->_index = index;
+		VM_BUG_ON(!IS_ALIGNED(index, min_nrpages));
 		do_page_cache_ra(ractl, this_chunk, 0);
 
 		index += this_chunk;
