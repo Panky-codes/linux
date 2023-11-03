@@ -3689,6 +3689,9 @@ static struct folio *do_read_cache_folio(struct address_space *mapping,
 {
 	struct folio *folio;
 	int err;
+	unsigned int min_nrpages = mapping_min_folio_nrpages(mapping);
+
+	index = round_down(index, min_nrpages);
 
 	if (!filler)
 		filler = mapping->a_ops->read_folio;
