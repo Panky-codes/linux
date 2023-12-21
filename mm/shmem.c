@@ -130,6 +130,120 @@ struct shmem_options {
 #define SHMEM_SEEN_QUOTA 32
 };
 
+/*
+ * Structure allocated for each folio to track per-block uptodate state.
+ *
+ * Like buffered-io shmem_folio_state struct but only for uptodate.
+ */
+struct shmem_folio_state {
+	spinlock_t state_lock;
+	unsigned long state[];
+};
+
+static inline bool sfs_is_fully_uptodate(struct folio *folio,
+					 struct shmem_folio_state *sfs)
+{
+	struct inode *inode = folio->mapping->host;
+
+	return bitmap_full(sfs->state, i_blocks_per_folio(inode, folio));
+}
+
+static inline bool _sfs_is_fully_not_uptodate(struct folio *folio,
+					 struct shmem_folio_state *sfs)
+{
+	struct inode *inode = folio->mapping->host;
+
+	return bitmap_empty(sfs->state, i_blocks_per_folio(inode, folio));
+}
+
+static inline bool sfs_is_fully_not_uptodate(struct folio *folio,
+					 struct shmem_folio_state *sfs)
+{
+	if ((sfs && folio_test_large(folio)))
+		return _sfs_is_fully_not_uptodate(folio, sfs);
+	return !folio_test_uptodate(folio);
+
+}
+
+static inline bool sfs_block_is_uptodate(struct shmem_folio_state *sfs,
+					 unsigned int block)
+{
+	return test_bit(block, sfs->state);
+}
+
+static inline bool _sfs_block_is_uptodate(struct folio *folio,
+					  struct shmem_folio_state *sfs,
+					  unsigned int block)
+{
+	if ((sfs && folio_test_large(folio)))
+		return sfs_block_is_uptodate(sfs, block);
+	return folio_test_uptodate(folio);
+}
+
+static void sfs_set_range_uptodate(struct folio *folio,
+				   struct shmem_folio_state *sfs, size_t off,
+				   size_t len)
+{
+	struct inode *inode = folio->mapping->host;
+	unsigned int first_blk = off >> inode->i_blkbits;
+	unsigned int last_blk = (off + len - 1) >> inode->i_blkbits;
+	unsigned int nr_blks = last_blk - first_blk + 1;
+	unsigned long flags;
+
+	spin_lock_irqsave(&sfs->state_lock, flags);
+	bitmap_set(sfs->state, first_blk, nr_blks);
+	if (sfs_is_fully_uptodate(folio, sfs))
+		folio_mark_uptodate(folio);
+	spin_unlock_irqrestore(&sfs->state_lock, flags);
+}
+
+static void shmem_set_range_uptodate(struct folio *folio, size_t off,
+				     size_t len)
+{
+	struct shmem_folio_state *sfs = folio->private;
+
+	if (sfs)
+		sfs_set_range_uptodate(folio, sfs, off, len);
+	else
+		folio_mark_uptodate(folio);
+}
+
+static struct shmem_folio_state *sfs_alloc(struct inode *inode,
+					   struct folio *folio, gfp_t gfp)
+{
+	struct shmem_folio_state *sfs = folio->private;
+	unsigned int nr_blocks = i_blocks_per_folio(inode, folio);
+
+	if (sfs || nr_blocks <= 1)
+		return sfs;
+
+	/*
+	 * sfs->state tracks uptodate flag when the block size is smaller
+	 * than the folio size.
+	 */
+	sfs = kzalloc(struct_size(sfs, state, BITS_TO_LONGS(nr_blocks)), gfp);
+	if (!sfs)
+		return sfs;
+
+	spin_lock_init(&sfs->state_lock);
+	if (folio_test_uptodate(folio))
+		bitmap_set(sfs->state, 0, nr_blocks);
+	folio_attach_private(folio, sfs);
+
+	return sfs;
+}
+
+static void sfs_free(struct folio *folio)
+{
+	struct shmem_folio_state *sfs = folio_detach_private(folio);
+
+	if (!sfs)
+		return;
+	WARN_ON_ONCE(sfs_is_fully_uptodate(folio, sfs) !=
+		     folio_test_uptodate(folio));
+	kfree(sfs);
+}
+
 #ifdef CONFIG_TMPFS
 static unsigned long shmem_default_max_blocks(void)
 {
@@ -1486,7 +1600,7 @@ static int shmem_writepage(struct page *page, struct writeback_control *wbc)
 		}
 		folio_zero_range(folio, 0, folio_size(folio));
 		flush_dcache_folio(folio);
-		folio_mark_uptodate(folio);
+		shmem_set_range_uptodate(folio, 0, folio_size(folio));
 	}
 
 	swap = folio_alloc_swap(folio);
@@ -1639,6 +1753,7 @@ static struct folio *shmem_alloc_and_add_folio(gfp_t gfp,
 {
 	struct address_space *mapping = inode->i_mapping;
 	struct shmem_inode_info *info = SHMEM_I(inode);
+	struct shmem_folio_state *sfs;
 	struct folio *folio;
 	long pages;
 	int error;
@@ -1720,6 +1835,10 @@ static struct folio *shmem_alloc_and_add_folio(gfp_t gfp,
 		}
 	}
 
+	sfs = sfs_alloc(inode, folio, gfp);
+	if (!sfs && i_blocks_per_folio(inode, folio) > 1)
+		goto unlock;
+
 	shmem_recalc_inode(inode, pages, 0);
 	folio_add_lru(folio);
 	return folio;
@@ -1777,7 +1896,7 @@ static int shmem_replace_folio(struct folio **foliop, gfp_t gfp,
 
 	__folio_set_locked(new);
 	__folio_set_swapbacked(new);
-	folio_mark_uptodate(new);
+	shmem_set_range_uptodate(new, 0, folio_size(new));
 	new->swap = entry;
 	folio_set_swapcache(new);
 
@@ -2007,7 +2126,10 @@ repeat:
 		}
 		if (sgp == SGP_WRITE)
 			folio_mark_accessed(folio);
-		if (folio_test_uptodate(folio))
+		/* if (folio_test_uptodate(folio)) */
+		/* 	goto out; */
+		if (_sfs_block_is_uptodate(folio, folio->private,
+					   index - folio_index(folio)))
 			goto out;
 		/* fallocated folio */
 		if (sgp != SGP_READ)
@@ -2103,7 +2225,7 @@ clear:
 		for (i = 0; i < n; i++)
 			clear_highpage(folio_page(folio, i));
 		flush_dcache_folio(folio);
-		folio_mark_uptodate(folio);
+		shmem_set_range_uptodate(folio, 0, folio_size(folio));
 	}
 
 	/* Perhaps the file has been truncated since we checked */
@@ -2659,7 +2781,7 @@ int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
 	VM_BUG_ON(folio_test_swapbacked(folio));
 	__folio_set_locked(folio);
 	__folio_set_swapbacked(folio);
-	__folio_mark_uptodate(folio);
+	__folio_mark_uptodate(folio); // XXX: No idea if this needs change
 
 	ret = -EFAULT;
 	max_off = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
@@ -2720,6 +2842,9 @@ shmem_write_begin(struct file *file, struct address_space *mapping,
 	if (ret)
 		return ret;
 
+	if(sfs_is_fully_not_uptodate(folio, folio->private))
+		folio_zero_range(folio, 0, folio_size(folio));
+
 	*pagep = folio_file_page(folio, index);
 	if (PageHWPoison(*pagep)) {
 		folio_unlock(folio);
@@ -2742,14 +2867,8 @@ shmem_write_end(struct file *file, struct address_space *mapping,
 	if (pos + copied > inode->i_size)
 		i_size_write(inode, pos + copied);
 
-	if (!folio_test_uptodate(folio)) {
-		if (copied < folio_size(folio)) {
-			size_t from = offset_in_folio(folio, pos);
-			folio_zero_segments(folio, 0, from,
-					from + copied, folio_size(folio));
-		}
-		folio_mark_uptodate(folio);
-	}
+	/* shmem_set_range_uptodate(folio, offset_in_folio(folio, pos), len); */
+	shmem_set_range_uptodate(folio, 0, folio_size(folio));
 	folio_mark_dirty(folio);
 	folio_unlock(folio);
 	folio_put(folio);
@@ -3508,7 +3627,7 @@ static int shmem_symlink(struct mnt_idmap *idmap, struct inode *dir,
 		inode->i_mapping->a_ops = &shmem_aops;
 		inode->i_op = &shmem_symlink_inode_operations;
 		memcpy(folio_address(folio), symname, len);
-		folio_mark_uptodate(folio);
+		shmem_set_range_uptodate(folio, 0, folio_size(folio));
 		folio_mark_dirty(folio);
 		folio_unlock(folio);
 		folio_put(folio);
@@ -4461,13 +4580,6 @@ static void __init shmem_destroy_inodecache(void)
 	kmem_cache_destroy(shmem_inode_cachep);
 }
 
-/* Keep the page in page cache instead of truncating it */
-static int shmem_error_remove_folio(struct address_space *mapping,
-				   struct folio *folio)
-{
-	return 0;
-}
-
 const struct address_space_operations shmem_aops = {
 	.writepage	= shmem_writepage,
 	.dirty_folio	= noop_dirty_folio,
@@ -4478,7 +4590,6 @@ const struct address_space_operations shmem_aops = {
 #ifdef CONFIG_MIGRATION
 	.migrate_folio	= migrate_folio,
 #endif
-	.error_remove_folio = shmem_error_remove_folio,
 };
 EXPORT_SYMBOL(shmem_aops);
 
