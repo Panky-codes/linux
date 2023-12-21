@@ -3585,6 +3585,55 @@ static int shmem_rename2(struct mnt_idmap *idmap,
 	return 0;
 }
 
+void shmem_invalidate_folio(struct folio *folio, size_t offset, size_t len)
+{
+	/*
+	 * If we're invalidating the entire folio, clear the dirty state
+	 * from it and release it to avoid unnecessary buildup of the LRU.
+	 */
+	if (offset == 0 && len == folio_size(folio)) {
+		WARN_ON_ONCE(folio_test_writeback(folio));
+		folio_cancel_dirty(folio);
+		sfs_free(folio);
+	}
+}
+
+bool shmem_release_folio(struct folio *folio, gfp_t gfp_flags)
+{
+	sfs_free(folio);
+	return true;
+}
+
+/*
+ * shmem_is_partially_uptodate checks whether blocks within a folio are
+ * uptodate or not.
+ *
+ * Returns true if all blocks which correspond to the specified part
+ * of the folio are uptodate.
+ */
+bool shmem_is_partially_uptodate(struct folio *folio, size_t from, size_t count)
+{
+	struct shmem_folio_state *sfs = folio->private;
+	struct inode *inode = folio->mapping->host;
+	unsigned first, last, i;
+
+	if (!sfs)
+		return false;
+
+	/* Caller's range may extend past the end of this folio */
+	count = min(folio_size(folio) - from, count);
+
+	/* First and last blocks in range within folio */
+	first = from >> inode->i_blkbits;
+	last = (from + count - 1) >> inode->i_blkbits;
+
+	for (i = first; i <= last; i++)
+		if (!sfs_block_is_uptodate(sfs, i))
+			return false;
+	return true;
+}
+
+
 static int shmem_symlink(struct mnt_idmap *idmap, struct inode *dir,
 			 struct dentry *dentry, const char *symname)
 {
@@ -4590,6 +4639,9 @@ const struct address_space_operations shmem_aops = {
 #ifdef CONFIG_MIGRATION
 	.migrate_folio	= migrate_folio,
 #endif
+	.invalidate_folio = shmem_invalidate_folio,
+	.release_folio	= shmem_release_folio,
+	.is_partially_uptodate = shmem_is_partially_uptodate,
 };
 EXPORT_SYMBOL(shmem_aops);
 
