@@ -2222,8 +2222,11 @@ clear:
 	if (sgp != SGP_WRITE && !folio_test_uptodate(folio)) {
 		long i, n = folio_nr_pages(folio);
 
-		for (i = 0; i < n; i++)
-			clear_highpage(folio_page(folio, i));
+		for (i = 0; i < n; i++) {
+			if (!_sfs_block_is_uptodate(folio, folio->private, i)) {
+				clear_highpage(folio_page(folio, i));
+			}
+		}
 		flush_dcache_folio(folio);
 		shmem_set_range_uptodate(folio, 0, folio_size(folio));
 	}
@@ -2867,8 +2870,7 @@ shmem_write_end(struct file *file, struct address_space *mapping,
 	if (pos + copied > inode->i_size)
 		i_size_write(inode, pos + copied);
 
-	/* shmem_set_range_uptodate(folio, offset_in_folio(folio, pos), len); */
-	shmem_set_range_uptodate(folio, 0, folio_size(folio));
+	shmem_set_range_uptodate(folio, offset_in_folio(folio, pos), len);
 	folio_mark_dirty(folio);
 	folio_unlock(folio);
 	folio_put(folio);
@@ -3600,6 +3602,8 @@ void shmem_invalidate_folio(struct folio *folio, size_t offset, size_t len)
 
 bool shmem_release_folio(struct folio *folio, gfp_t gfp_flags)
 {
+	if (folio_test_dirty(folio))
+		return false;
 	sfs_free(folio);
 	return true;
 }
