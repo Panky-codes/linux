@@ -310,7 +310,9 @@ void force_page_cache_ra(struct readahead_control *ractl,
 	struct address_space *mapping = ractl->mapping;
 	struct file_ra_state *ra = ractl->ra;
 	struct backing_dev_info *bdi = inode_to_bdi(mapping->host);
-	unsigned long max_pages, index;
+	unsigned long max_pages;
+	pgoff_t index;
+	unsigned long min_nrpages = mapping_min_folio_nrpages(mapping);
 
 	if (unlikely(!mapping->a_ops->read_folio && !mapping->a_ops->readahead))
 		return;
@@ -319,9 +321,17 @@ void force_page_cache_ra(struct readahead_control *ractl,
 	 * If the request exceeds the readahead window, allow the read to
 	 * be up to the optimal hardware IO size
 	 */
-	index = readahead_index(ractl);
 	max_pages = max_t(unsigned long, bdi->io_pages, ra->ra_pages);
 	nr_to_read = min_t(unsigned long, nr_to_read, max_pages);
+
+	/*
+	 * As min_order folios are added to the page_cache, round_up the
+	 * nr_to_read to the nearest min_nrpages. This will also ensure
+	 * that index is always aligned to min_order.
+	 */
+	index = mapping_align_start_index(mapping, readahead_index(ractl));
+	nr_to_read = round_up(nr_to_read, min_nrpages);
+
 	while (nr_to_read) {
 		unsigned long this_chunk = (2 * 1024 * 1024) / PAGE_SIZE;
 
@@ -634,6 +644,7 @@ static void ondemand_readahead(struct readahead_control *ractl,
 	 * standalone, small random read
 	 * Read as is, and do not pollute the readahead state.
 	 */
+	ractl->_index = mapping_align_start_index(ractl->mapping, index);
 	do_page_cache_ra(ractl, req_size, 0);
 	return;
 
@@ -660,7 +671,7 @@ readit:
 		}
 	}
 
-	ractl->_index = ra->start;
+	ractl->_index = mapping_align_start_index(ractl->mapping, ra->start);
 	page_cache_ra_order(ractl, ra, order);
 }
 

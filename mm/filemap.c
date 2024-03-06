@@ -3155,6 +3155,14 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 	 */
 	fpin = maybe_unlock_mmap_for_io(vmf, fpin);
 	ra->start = max_t(long, 0, vmf->pgoff - ra->ra_pages / 2);
+
+	/*
+	 * ra->start might not be aligned to mapping_min_folio_order.
+	 * As the ractl._index is set to ra->start before starting the
+	 * readahead, align the start index so that the folios that are
+	 * added to the page cache respect the min_order alignment.
+	 */
+	ra->start = mapping_align_start_index(mapping, ra->start);
 	ra->size = ra->ra_pages;
 	ra->async_size = ra->ra_pages / 4;
 	ractl._index = ra->start;
