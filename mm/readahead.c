@@ -694,6 +694,11 @@ readit:
 	}
 
 	ractl->_index = mapping_align_start_index(ractl->mapping, ra->start);
+	if (ractl->_index != ra->start) {
+		ra->size += ra->start - ractl->_index;
+		ra->async_size += ra->start - ractl->_index;
+	}
+
 	page_cache_ra_order(ractl, ra, order);
 }
 
