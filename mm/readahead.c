@@ -138,7 +138,8 @@
 void
 file_ra_state_init(struct file_ra_state *ra, struct address_space *mapping)
 {
-	ra->ra_pages = inode_to_bdi(mapping->host)->ra_pages;
+	ra->ra_pages = round_up(inode_to_bdi(mapping->host)->ra_pages,
+				mapping_min_folio_nrpages(mapping));
 	ra->prev_pos = -1;
 }
 EXPORT_SYMBOL_GPL(file_ra_state_init);
