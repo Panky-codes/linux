@@ -3600,12 +3600,15 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 	}
 	do {
 		unsigned long end;
+		unsigned long i_size;
 
 		addr += (xas.xa_index - last_pgoff) << PAGE_SHIFT;
 		vmf->pte += xas.xa_index - last_pgoff;
 		last_pgoff = xas.xa_index;
 		end = folio_next_index(folio) - 1;
-		nr_pages = min(end, end_pgoff) - xas.xa_index + 1;
+		i_size = DIV_ROUND_UP(i_size_read(mapping->host),
+				      PAGE_SIZE) - 1;
+		nr_pages = min3(end, end_pgoff, i_size) - xas.xa_index + 1;
 
 		if (!folio_test_large(folio))
 			ret |= filemap_map_order0_folio(vmf,
