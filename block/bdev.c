@@ -155,7 +155,7 @@ int set_blocksize(struct file *file, int size)
 	struct block_device *bdev = I_BDEV(inode);
 
 	/* Size must be a power of two, and between 512 and PAGE_SIZE */
-	if (size > PAGE_SIZE || size < 512 || !is_power_of_2(size))
+	if (size < 512 || !is_power_of_2(size))
 		return -EINVAL;
 
 	/* Size cannot be smaller than the size supported by the device */

@@ -1464,6 +1464,8 @@ struct inode *ext2_iget (struct super_block *sb, unsigned long ino)
 
 	if (S_ISREG(inode->i_mode)) {
 		ext2_set_file_ops(inode);
+		mapping_set_folio_min_order(inode->i_mapping,
+					    sb->s_blocksize_bits - PAGE_SHIFT);
 	} else if (S_ISDIR(inode->i_mode)) {
 		inode->i_op = &ext2_dir_inode_operations;
 		inode->i_fop = &ext2_dir_operations;
