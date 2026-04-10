@@ -1353,6 +1353,48 @@ xfs_falloc_zero_range(
 	return xfs_falloc_setsize(file, new_size);
 }
 
+
+static int
+xfs_falloc_write_zeroes(
+	struct file		*file,
+	int			mode,
+	loff_t			offset,
+	loff_t			len,
+	struct xfs_zone_alloc_ctx *ac)
+{
+	struct inode		*inode = file_inode(file);
+	struct xfs_inode	*ip = XFS_I(inode);
+	loff_t			new_size = 0;
+	loff_t			old_size = XFS_ISIZE(ip);
+	bool			did_zero;
+	int			error;
+
+	if (xfs_is_always_cow_inode(ip) ||
+	    !bdev_write_zeroes_unmap_sectors(
+		    xfs_inode_buftarg(XFS_I(inode))->bt_bdev))
+		return -EOPNOTSUPP;
+
+	error = xfs_falloc_newsize(file, mode, offset, len, &new_size);
+	if (error)
+		return error;
+
+	error = xfs_free_file_space(ip, offset, len, ac);
+	if (error)
+		return error;
+
+	error = xfs_bmap_alloc_or_convert_range(ip, offset, len,
+			XFS_BMAPI_CONVERT | XFS_BMAPI_ZERO,
+			new_size ? true : false);
+
+	if (error)
+		return error;
+
+	if (offset > old_size)
+		error = xfs_zero_range(ip, old_size, offset - old_size, NULL,
+				       &did_zero);
+	return error;
+}
+
 static int
 xfs_falloc_unshare_range(
 	struct file		*file,
@@ -1409,7 +1451,7 @@ xfs_falloc_allocate_range(
 #define	XFS_FALLOC_FL_SUPPORTED						\
 		(FALLOC_FL_ALLOCATE_RANGE | FALLOC_FL_KEEP_SIZE |	\
 		 FALLOC_FL_PUNCH_HOLE |	FALLOC_FL_COLLAPSE_RANGE |	\
-		 FALLOC_FL_ZERO_RANGE |	FALLOC_FL_INSERT_RANGE |	\
+		 FALLOC_FL_ZERO_RANGE |	FALLOC_FL_WRITE_ZEROES | FALLOC_FL_INSERT_RANGE |	\
 		 FALLOC_FL_UNSHARE_RANGE)
 
 STATIC long
@@ -1455,6 +1497,9 @@ __xfs_file_fallocate(
 		break;
 	case FALLOC_FL_ZERO_RANGE:
 		error = xfs_falloc_zero_range(file, mode, offset, len, ac);
+		break;
+	case FALLOC_FL_WRITE_ZEROES:
+		error = xfs_falloc_write_zeroes(file, mode, offset, len, ac);
 		break;
 	case FALLOC_FL_UNSHARE_RANGE:
 		error = xfs_falloc_unshare_range(file, mode, offset, len);

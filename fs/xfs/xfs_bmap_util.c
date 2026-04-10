@@ -28,6 +28,7 @@
 #include "xfs_icache.h"
 #include "xfs_iomap.h"
 #include "xfs_reflink.h"
+#include "xfs_health.h"
 #include "xfs_rtbitmap.h"
 #include "xfs_rtgroup.h"
 #include "xfs_zone_alloc.h"
@@ -773,6 +774,135 @@ error:
 	xfs_iunlock(ip, XFS_ILOCK_EXCL);
 	return error;
 }
+
+/*
+ * This function is used to allocate written extents over holes
+ * and/or convert unwritten extents to written extents based on the
+ * @flags passed to it.
+ *
+ * If @flags is zero, if will allocate written extents for holes and
+ * delalloc extents across the range.
+ *
+ * If XFS_BMAPI_CONVERT is specified in @flags, then it will also do
+ * conversion of unwritten extents in the range to written extents.
+ *
+ * If XFS_BMAPI_ZERO is specified in @flags, then both newly
+ * allocated extents and converted unwritten extents will be
+ * initialised to contain zeroes.
+ *
+ * If @update_isize is true, then if the range we are operating on
+ * extends beyond the current EOF, extend i_size to offset+len
+ * incrementally as extents in the range are allocated/converted.
+ */
+int
+xfs_bmap_alloc_or_convert_range(
+       struct xfs_inode *ip,
+       xfs_off_t offset,
+       xfs_off_t count,
+       uint32_t flags,
+       bool update_isize)
+{
+       struct xfs_mount *mp = ip->i_mount;
+       struct inode *inode = VFS_I(ip);
+       xfs_fileoff_t offset_fsb;
+       xfs_filblks_t count_fsb;
+       int error;
+       xfs_trans_t *tp = NULL;
+
+       ASSERT((flags & ~(XFS_BMAPI_ZERO | XFS_BMAPI_CONVERT)) == 0);
+
+       if (count <= 0)
+               return 0;
+
+       offset_fsb = XFS_B_TO_FSBT(mp, offset);
+       count_fsb = XFS_B_TO_FSB(mp, (xfs_ufsize_t)offset + count);
+       count_fsb -= offset_fsb;
+
+       error = xfs_qm_dqattach(ip);
+       if (error)
+               return error;
+
+       while (count_fsb > 0) {
+               xfs_filblks_t done_fsb;
+               xfs_bmbt_irec_t imap;
+               xfs_fsize_t isize;
+               uint resblks, dblocks;
+               int nimaps = 1;
+
+               resblks = min_t(xfs_filblks_t, count_fsb, XFS_MAX_BMBT_EXTLEN);
+               dblocks = XFS_DIOSTRAT_SPACE_RES(mp, resblks);
+
+               tp = NULL;
+               error = xfs_trans_alloc_inode(ip, &M_RES(mp)->tr_write,
+                                             dblocks, 0, false, &tp);
+               if (error)
+                       return error;
+
+               error = xfs_iext_count_extend(tp, ip, XFS_DATA_FORK,
+                                             XFS_IEXT_WRITE_UNWRITTEN_CNT);
+               if (error)
+                       goto out_cancel;
+
+               error = xfs_bmapi_write(tp, ip, offset_fsb, resblks, flags, 0,
+                                       &imap, &nimaps);
+               if (error) {
+                       if (error == -ENOSR)
+                               error = 0;
+                       else
+                               goto out_cancel;
+               } else {
+                       done_fsb = imap.br_blockcount;
+                       if (!done_fsb || nimaps != 1) {
+                               error = -EFSCORRUPTED;
+                               goto out_cancel;
+                       }
+
+		       if (unlikely(!xfs_valid_startblock(
+				   ip, imap.br_startblock))) {
+			       xfs_bmap_mark_sick(ip, XFS_DATA_FORK);
+			       error = -EFSCORRUPTED;
+			       goto out_cancel;
+		       }
+
+		       if (unlikely(imap.br_startblock == DELAYSTARTBLOCK)) {
+			       xfs_bmap_mark_sick(ip, XFS_DATA_FORK);
+			       error = -EFSCORRUPTED;
+			       goto out_cancel;
+		       }
+
+		       if (update_isize) {
+                               isize = XFS_FSB_TO_B(mp, offset_fsb + done_fsb);
+                               if (isize > offset + count)
+                                       isize = offset + count;
+
+                               if (isize > i_size_read(inode))
+                                       i_size_write(inode, isize);
+
+                               isize = xfs_new_eof(ip, isize);
+                               if (isize) {
+                                       ip->i_disk_size = isize;
+                                       xfs_trans_log_inode(tp, ip, XFS_ILOG_CORE);
+                               }
+                       }
+
+                       offset_fsb += done_fsb;
+                       count_fsb -= done_fsb;
+               }
+
+               error = xfs_trans_commit(tp);
+               xfs_iunlock(ip, XFS_ILOCK_EXCL);
+               if (error)
+                       return error;
+       }
+
+       return 0;
+
+out_cancel:
+       xfs_trans_cancel(tp);
+       xfs_iunlock(ip, XFS_ILOCK_EXCL);
+       return error;
+}
+
 
 static int
 xfs_unmap_extent(
