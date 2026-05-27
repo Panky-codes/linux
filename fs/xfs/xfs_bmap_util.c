@@ -642,11 +642,33 @@ out_unlock:
 	return error;
 }
 
+/*
+ * This function is used to allocate written extents over holes and/or convert
+ * unwritten extents to written extents based on the @flags passed to it.
+ *
+ * If @flags is zero, it will allocate written extents for holes and delalloc
+ * extents across the range.
+ *
+ * If XFS_BMAPI_PREALLOC is specified in @flags, then it will allocate unwritten
+ * extents in the range. This cannot be combined with XFS_BMAPI_ZERO.
+ *
+ * If XFS_BMAPI_CONVERT is specified in @flags, then it will also do conversion
+ * of unwritten extents in the range to written extents.
+ *
+ * If XFS_BMAPI_ZERO is specified in @flags, then both newly allocated extents
+ * and converted unwritten extents will be initialised to contain zeroes.
+ *
+ * If @update_isize is true, then if the range we are operating on extends
+ * beyond the current EOF, extend i_size to offset+len incrementally as extents
+ * in the range are allocated/converted.
+ */
 int
-xfs_alloc_file_space(
+xfs_bmap_alloc_or_convert_range(
 	struct xfs_inode	*ip,
 	xfs_off_t		offset,
-	xfs_off_t		len)
+	xfs_off_t		len,
+	uint32_t		flags,
+	bool			update_isize)
 {
 	xfs_mount_t		*mp = ip->i_mount;
 	xfs_off_t		count;
@@ -657,6 +679,8 @@ xfs_alloc_file_space(
 	int			rt;
 	xfs_trans_t		*tp;
 	xfs_bmbt_irec_t		imaps[1], *imapp;
+	xfs_fsize_t		i_size;
+	struct inode		*inode = VFS_I(ip);
 	int			error;
 
 	if (xfs_is_always_cow_inode(ip))
@@ -690,6 +714,7 @@ xfs_alloc_file_space(
 		xfs_fileoff_t	s, e;
 		unsigned int	dblocks, rblocks, resblks;
 		int		nimaps = 1;
+		int		iext_flags = XFS_IEXT_ADD_NOSPLIT_CNT;
 
 		/*
 		 * Determine space reservations for data/realtime.
@@ -733,8 +758,11 @@ xfs_alloc_file_space(
 		if (error)
 			break;
 
-		error = xfs_iext_count_extend(tp, ip, XFS_DATA_FORK,
-				XFS_IEXT_ADD_NOSPLIT_CNT);
+		if (flags & XFS_BMAPI_CONVERT)
+			iext_flags = XFS_IEXT_WRITE_UNWRITTEN_CNT;
+
+		error = xfs_iext_count_extend(tp, ip, XFS_DATA_FORK, iext_flags);
+
 		if (error)
 			goto error;
 
@@ -748,19 +776,35 @@ xfs_alloc_file_space(
 		 * will eventually reach the requested range.
 		 */
 		error = xfs_bmapi_write(tp, ip, startoffset_fsb,
-				allocatesize_fsb, XFS_BMAPI_PREALLOC, 0, imapp,
+				allocatesize_fsb, flags, 0, imapp,
 				&nimaps);
 		if (error) {
 			if (error != -ENOSR)
 				goto error;
 			error = 0;
 		} else {
+			i_size = XFS_FSB_TO_B(mp,
+					startoffset_fsb + imapp->br_blockcount);
 			startoffset_fsb += imapp->br_blockcount;
 			allocatesize_fsb -= imapp->br_blockcount;
+
+			if (update_isize) {
+				if (i_size > offset + count)
+					i_size = offset + count;
+				if (i_size > i_size_read(inode))
+					i_size_write(inode, i_size);
+				i_size = xfs_new_eof(ip, i_size);
+				if (i_size) {
+					ip->i_disk_size = i_size;
+					xfs_trans_log_inode(tp, ip, XFS_ILOG_CORE);
+				}
+			}
 		}
 
-		ip->i_diflags |= XFS_DIFLAG_PREALLOC;
-		xfs_trans_log_inode(tp, ip, XFS_ILOG_CORE);
+		if (flags == XFS_BMAPI_PREALLOC) {
+			ip->i_diflags |= XFS_DIFLAG_PREALLOC;
+			xfs_trans_log_inode(tp, ip, XFS_ILOG_CORE);
+		}
 
 		error = xfs_trans_commit(tp);
 		xfs_iunlock(ip, XFS_ILOCK_EXCL);
@@ -772,6 +816,16 @@ error:
 	xfs_trans_cancel(tp);
 	xfs_iunlock(ip, XFS_ILOCK_EXCL);
 	return error;
+}
+
+int
+xfs_alloc_file_space(
+	struct xfs_inode	*ip,
+	xfs_off_t		offset,
+	xfs_off_t		len)
+{
+	return xfs_bmap_alloc_or_convert_range(ip, offset, len,
+						XFS_BMAPI_PREALLOC, false);
 }
 
 static int
